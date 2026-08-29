@@ -421,6 +421,41 @@
   .theme-row .bar-inner.pc-yellow { background: linear-gradient(90deg, #e8c400, #c9a700); }
   .theme-row .bar-inner.pc-green  { background: linear-gradient(90deg, var(--good), #067f06); }
   .theme-row .pct { flex: none; width: 42px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-muted); }
+  /* ---------- "Mes statistiques" — tableau (29/08/2026) ---------- */
+  .stats-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; background: var(--card); box-shadow: var(--shadow-sm); }
+  .stats-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .stats-table th {
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700;
+    color: var(--text-muted); padding: 12px 14px; border-bottom: 1px solid var(--border);
+    white-space: nowrap; background: var(--surface-1);
+  }
+  .stats-table td { padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .stats-table tbody tr:last-child td { border-bottom: none; }
+  .stats-table tbody tr.stats-row:hover { background: var(--surface-1); }
+  .stats-table .who-cell .name { font-weight: 700; font-size: 13.5px; }
+  .stats-table .who-cell .email { font-size: 11.5px; color: var(--text-muted); margin-top: 1px; }
+  .stats-table select.mini {
+    font-family: inherit; font-size: 12.5px; padding: 6px 8px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary);
+  }
+  .stats-table .qual-pill {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700;
+    padding: 4px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted);
+    cursor: pointer; user-select: none; background: var(--surface-1); transition: background .1s ease, color .1s ease;
+  }
+  .stats-table .qual-pill.on { background: var(--indigo-light); color: var(--indigo-dark); border-color: transparent; }
+  .stats-table .mini-bar-outer { width: 70px; height: 7px; background: var(--gridline); border-radius: 999px; overflow: hidden; display: inline-block; vertical-align: middle; }
+  .stats-table .mini-bar-inner { height: 100%; border-radius: 999px; display: inline-block; }
+  .stats-table .mini-bar-inner.pc-red    { background: linear-gradient(90deg, var(--critical), var(--coral-dark)); }
+  .stats-table .mini-bar-inner.pc-orange { background: linear-gradient(90deg, #f0a202, #c97e00); }
+  .stats-table .mini-bar-inner.pc-yellow { background: linear-gradient(90deg, #e8c400, #c9a700); }
+  .stats-table .mini-bar-inner.pc-green  { background: linear-gradient(90deg, var(--good), #067f06); }
+  .stats-table .expand-btn { border: none; background: none; cursor: pointer; color: var(--blue); font-weight: 700; font-size: 12px; padding: 4px 6px; font-family: inherit; }
+  .stats-table .expand-btn:hover { text-decoration: underline; }
+  .stats-detail-row td { background: var(--surface-2); padding: 16px 18px; }
+  @media (max-width: 700px) {
+    .stats-table th, .stats-table td { padding: 9px 10px; }
+  }
   .empty-state { text-align: center; color: var(--text-muted); font-size: 13.5px; padding: 30px 10px; }
   .empty-state .icon-chip { margin: 0 auto 12px; }
   footer.note { text-align: center; font-size: 11.5px; color: var(--text-muted); margin-top: 26px; line-height: 1.6; }
@@ -1100,7 +1135,17 @@ const state = {
   homeExpandedLevel: null, // fonction actuellement dépliée dans les blocs de l'accueil (PSC | PSE1 | PSE2 | null)
   documents: null,
   docFilter: { fonction: null, theme: "all" },
-  docForm: { open: false, kind: "file", title: "", description: "", fonction: "PSE1", theme: "", url: "", file: null, busy: false, error: null, progress: 0 },
+  docForm: { open: false, kind: "file", title: "", description: "", fonction: "PSE1", theme: "", url: "", file: null, busy: false, error: null, progress: 0, folderId: "", extraFonctions: [] },
+  // Point 11 (29/08/2026) : dossiers de documents.
+  docFolders: [], // [{id, label}]
+  docFolderForm: { open: false, label: "", busy: false, error: null },
+  // Édition du dossier / des fonctions additionnelles d'un document déjà créé.
+  docMetaEdit: { open: null, folderId: "", extraFonctions: [], busy: false, error: null }, // open: null | document_id
+  // Point 12 (29/08/2026) : aperçu sans téléchargement.
+  docPreview: null, // null | { title, url, kind: "pdf"|"image"|"video" }
+  // "Mes statistiques" (ex-Personnels) passé en tableau le 29/08/2026 : ligne dépliée pour voir le
+  // détail par thématique + les actions (Suivi de formation initiale, Mon parcours).
+  statsExpandedId: null,
   appSettings: { disclaimer_message: "⚠️ Outil de révision non officiel, destiné à l'entraînement entre deux formations. Il ne remplace pas la formation continue, le référentiel national à jour, ni les consignes de votre formateur. En situation réelle, suivez toujours les recommandations en vigueur et la régulation médicale (15 / 18 / 112).", referentiel_banner: "Le référentiel national a été mis à jour en juillet 2026. Le contenu de l'application est en cours de relecture pour s'y conformer." },
   formateurCode: null,
   accounts: null,
@@ -1133,10 +1178,7 @@ const state = {
   questionnairesTab: "PSC",
   // "Mon profil" (point 5, 29/08/2026) : édition par l'utilisateur lui-même (photo, nom, date de
   // naissance, adresse). photoPreview est une data URL locale (avant envoi), photo_url le champ enregistré.
-  myProfileForm: { full_name: "", date_naissance: "", adresse: "", photo_url: "", photoFile: null, photoPreview: null, uploadProgress: 0, busy: false, error: null, message: null },
-  // "Gestion du personnel" (point 17, Administration) : réutilise la même liste que la page
-  // Administration (app_admin_list_accounts, désormais enrichie des champs profil).
-  personnelManagement: null // null | "loading" | array de comptes | { error: true }
+  myProfileForm: { full_name: "", date_naissance: "", adresse: "", photo_url: "", photoFile: null, photoPreview: null, uploadProgress: 0, busy: false, error: null, message: null }
 };
 
 const FONCTIONS = [
@@ -1584,15 +1626,21 @@ async function submitMyProfileForm() {
 }
 
 /* ============================================================
-   GESTION DU PERSONNEL (point 17, Administration) — 29/08/2026
-   Réutilise app_admin_list_accounts (désormais enrichie de photo_url/date_naissance/adresse).
+   GESTION DU PERSONNEL (point 17) — 29/08/2026, ouverte au formateur le 29/08/2026 (suite)
+   Regroupe désormais l'identité (photo, date de naissance, adresse — lecture seule, éditée par
+   chacun via "Mon profil") ET les réglages de compte (fonction, difficulté, qualifications), déplacés
+   ici depuis "Mes statistiques" pour ne pas mélanger pilotage de compte et suivi de progression.
+   Réutilise app_list_secouristes (même source de données que "Mes statistiques", désormais enrichie
+   des champs de profil) plutôt que app_admin_list_accounts, qui exposerait aussi les comptes
+   formateur/administrateur — hors périmètre pour un formateur non-administrateur.
    ============================================================ */
 async function goToPersonnelManagement() {
   state.view = "personnelManagement";
-  state.personnelManagement = "loading";
+  state.secouristes = "loading";
   render();
-  const r = await rpc("app_admin_list_accounts", { p_token: state.auth.token });
-  state.personnelManagement = r && r.accounts ? r.accounts : { error: true };
+  const r = await rpc("app_list_secouristes", { p_token: state.auth.token });
+  state.secouristes = r && r.secouristes ? r.secouristes : { error: true };
+  if (r && r.formateur_code) state.formateurCode = r.formateur_code;
   render();
 }
 
@@ -1662,6 +1710,7 @@ async function goToDocuments() {
   render();
   const r = await rpc("app_list_documents", { p_token: state.auth.token });
   state.documents = r && r.documents ? r.documents : { error: true };
+  state.docFolders = r && r.folders ? r.folders : [];
   render();
 }
 
@@ -2262,6 +2311,11 @@ function restartSameSettings() { beginQuiz(); }
    RENDU — squelette (sidebar + contenu)
    ============================================================ */
 function el(html) { const d = document.createElement("div"); d.innerHTML = html.trim(); return d.firstChild; }
+// Un <tr> ne peut pas être créé via div.innerHTML (le navigateur l'ignore silencieusement hors d'un
+// <table> — "foster parenting" du parseur HTML). Nécessaire pour le tableau "Mes statistiques" (29/08/2026).
+function elRow(html) { const t = document.createElement("table"); t.innerHTML = html.trim(); return t.querySelector("tr"); }
+// Même contrainte pour un <td>/<th> isolé (hors <tr>) : doit être analysé dans un contexte <table><tr>.
+function elCell(html) { const t = document.createElement("table"); t.innerHTML = "<tr>" + html.trim() + "</tr>"; return t.querySelector("td, th"); }
 
 /* ============================================================
    ASSETS DE MARQUE — logo réel MyPSE (recadré depuis la charte
@@ -2391,6 +2445,8 @@ function render() {
   shell.appendChild(content);
   root.appendChild(shell);
 
+  if (state.docPreview) shell.appendChild(renderDocPreviewOverlay());
+
   if (state.view === "quiz" && state.quiz.mode === "examen") updateTimerDisplay();
 }
 
@@ -2497,13 +2553,9 @@ function renderSidebar() {
     navQuiz.appendChild(btn);
   });
 
-  // Groupe "Ressources" : Personnels (formateur/administrateur uniquement), Documents, Calendrier.
+  // Groupe "Ressources" : Documents, Calendrier. "Personnels" déplacé vers "Pédagogie" et renommé
+  // "Mes statistiques" le 29/08/2026 (point 18).
   const navRes = aside.querySelector("#navRes");
-  if (isFormateur()) {
-    const formBtn = el(`<button class="${state.view === "formateur" ? "active" : ""}"><span class="ic">${svgIcon("users", 15)}</span>Personnels</button>`);
-    formBtn.onclick = () => { goToFormateur(); closeMobileSidebar(); };
-    navRes.appendChild(formBtn);
-  }
   const docBtn = el(`<button class="${state.view === "documents" ? "active" : ""}"><span class="ic">${svgIcon("folder", 15)}</span>Documents</button>`);
   docBtn.onclick = () => { goToDocuments(); closeMobileSidebar(); };
   navRes.appendChild(docBtn);
@@ -2513,6 +2565,19 @@ function renderSidebar() {
 
   if (isFormateur()) {
     const navPedago = aside.querySelector("#navPedago");
+    // (18) Renommé "Personnels" -> "Mes statistiques" et déplacé de "Ressources" vers "Pédagogie" le
+    // 29/08/2026 — même page, même comportement (goToFormateur/renderFormateur inchangés), seuls le
+    // libellé du bouton et son emplacement dans le menu changent.
+    const statsBtn = el(`<button class="${state.view === "formateur" ? "active" : ""}"><span class="ic">${svgIcon("chart", 15)}</span>Mes statistiques</button>`);
+    statsBtn.onclick = () => { goToFormateur(); closeMobileSidebar(); };
+    navPedago.appendChild(statsBtn);
+    // "Gestion du personnel" (point 17) ouverte au formateur le 29/08/2026 (suite) : les réglages de
+    // compte (fonction/difficulté/qualifications) y ont été déplacés depuis "Mes statistiques", qui
+    // devient une page de lecture seule — il fallait donc que le formateur garde l'accès à ces réglages,
+    // qu'il pouvait déjà modifier avant cette réorganisation.
+    const personnelBtn = el(`<button class="${state.view === "personnelManagement" ? "active" : ""}"><span class="ic">${svgIcon("users", 15)}</span>Gestion du personnel</button>`);
+    personnelBtn.onclick = () => { goToPersonnelManagement(); closeMobileSidebar(); };
+    navPedago.appendChild(personnelBtn);
     const questionsBtn = el(`<button class="${state.view === "questionsAdmin" ? "active" : ""}"><span class="ic">${svgIcon("help", 15)}</span>Questionnaires</button>`);
     questionsBtn.onclick = () => { goToQuestionsAdmin(); closeMobileSidebar(); };
     navPedago.appendChild(questionsBtn);
@@ -2523,11 +2588,6 @@ function renderSidebar() {
     const adminBtn = el(`<button class="${state.view === "admin" ? "active" : ""}"><span class="ic">${svgIcon("gear", 15)}</span>Administration</button>`);
     adminBtn.onclick = () => { goToAdmin(); closeMobileSidebar(); };
     navAdmin.appendChild(adminBtn);
-    // Nouvel onglet "Gestion du personnel" (point 17, 29/08/2026) : photo + identité + coordonnées de
-    // l'ensemble des comptes, distinct de "Mes statistiques" (ex-Personnels, orienté pédagogie/scores).
-    const personnelBtn = el(`<button class="${state.view === "personnelManagement" ? "active" : ""}"><span class="ic">${svgIcon("users", 15)}</span>Gestion du personnel</button>`);
-    personnelBtn.onclick = () => { goToPersonnelManagement(); closeMobileSidebar(); };
-    navAdmin.appendChild(personnelBtn);
     const createProfileBtn = el(`<button class="${state.view === "createProfile" ? "active" : ""}"><span class="ic">${svgIcon("users", 15)}</span>Créer un profil</button>`);
     createProfileBtn.onclick = () => { goToCreateProfile(); closeMobileSidebar(); };
     navAdmin.appendChild(createProfileBtn);
@@ -2760,7 +2820,7 @@ function renderFormateurHomeContent() {
   </div>`));
 
   const shortcuts = [
-    { icon: "users", color: "indigo", title: "Personnels", sub: "Suivi individuel et difficulté recommandée", fn: goToFormateur },
+    { icon: "chart", color: "indigo", title: "Mes statistiques", sub: "Suivi individuel et difficulté recommandée", fn: goToFormateur },
     { icon: "cap", color: "coral", title: "Formation initiale", sub: "Vue d'ensemble module par module", fn: goToTrainingOverview },
     { icon: "calendar", color: "teal", title: "Recyclage (FMA)", sub: "Suivi de la formation continue", fn: goToFmaOverview },
     { icon: "clipboard", color: "amber", title: "Questionnaires", sub: "Statistiques et contenus de révision", fn: goToProgress },
@@ -3030,17 +3090,23 @@ function renderMyProfile() {
 }
 
 /* ============================================================
-   GESTION DU PERSONNEL — rendu
+   GESTION DU PERSONNEL — rendu (29/08/2026, ouverte au formateur)
    ============================================================ */
 function renderPersonnelManagement() {
   const container = el(`<div></div>`);
-  container.appendChild(el(`<div class="page-header">${iconChip("users", { color: "critical" })}<div><div class="page-title">Gestion du personnel</div><div class="page-sub">Photo, identité et coordonnées de l'ensemble des comptes.</div></div></div>`));
+  container.appendChild(el(`<div class="page-header">${iconChip("users", { color: "critical" })}<div><div class="page-title">Gestion du personnel</div><div class="page-sub">Identité, fonction et qualifications de vos secouristes.</div></div></div>`));
 
-  if (state.personnelManagement === "loading") {
+  container.appendChild(el(`<div class="card">
+    <h3>Code formateur</h3>
+    <p class="help">Communiquez ce code à un collègue pour qu'il crée lui aussi un compte formateur (à saisir lors de son inscription, champ « Je suis formateur »). Modifiable depuis Administration.</p>
+    <div style="font-family:monospace;font-weight:700;font-size:14px;background:var(--surface-1);border:1px solid var(--border);border-radius:8px;padding:8px 12px;display:inline-block;">${esc(state.formateurCode || "…")}</div>
+  </div>`));
+
+  if (state.secouristes === "loading") {
     container.appendChild(el(`<div class="card"><div class="empty-state">Chargement…</div></div>`));
     return container;
   }
-  if (!state.personnelManagement || state.personnelManagement.error) {
+  if (!state.secouristes || state.secouristes.error) {
     const c = el(`<div class="card"><div class="empty-state">Impossible de charger la liste du personnel.</div></div>`);
     const retry = el(`<button class="btn block">Réessayer</button>`);
     retry.onclick = goToPersonnelManagement;
@@ -3048,29 +3114,73 @@ function renderPersonnelManagement() {
     container.appendChild(c);
     return container;
   }
+  if (state.secouristes.length === 0) {
+    container.appendChild(el(`<div class="card"><div class="empty-state">Aucun secouriste n'a encore créé de compte.</div></div>`));
+    return container;
+  }
 
-  const grid = el(`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;"></div>`);
-  state.personnelManagement.forEach(acc => {
-    const initials = (acc.full_name || "").split(" ").filter(Boolean).map(w => w[0]).slice(0, 2).join("").toUpperCase();
-    const avatarStyle = "width:48px;height:48px;border-radius:999px;flex:none;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:#fff;background:linear-gradient(135deg, var(--indigo), var(--blue-dark));";
-    const avatarHtml = acc.photo_url
-      ? `<img src="${esc(acc.photo_url)}" style="width:48px;height:48px;border-radius:999px;object-fit:cover;flex:none;" />`
-      : `<div style="${avatarStyle}">${esc(initials)}</div>`;
-    const card = el(`<div class="card" style="display:flex;gap:12px;align-items:flex-start;">
-      ${avatarHtml}
-      <div style="min-width:0;">
-        <div style="font-weight:700;font-size:14.5px;">${esc(acc.full_name)}${acc.is_self ? " (vous)" : ""}</div>
-        <div style="font-size:12.5px;color:var(--text-muted);margin-top:1px;">${esc(mergedRoleLabel(acc))}</div>
-        <div style="font-size:12px;color:var(--text-muted);margin-top:4px;word-break:break-all;">${esc(acc.email)}</div>
-        ${acc.date_naissance ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">Né(e) le ${esc(formatDateFR(acc.date_naissance))}</div>` : ""}
-        ${acc.adresse ? `<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${esc(acc.adresse)}</div>` : ""}
-        ${acc.disabled ? `<div class="tag tag-warn" style="margin-top:6px;">Désactivé</div>` : ""}
-      </div>
-    </div>`);
-    grid.appendChild(card);
-  });
-  container.appendChild(grid);
+  const tableWrap = el(`<div class="stats-table-wrap"><table class="stats-table">
+    <thead><tr>
+      <th>Secouriste</th><th>Né(e) le</th><th>Adresse</th><th>Fonction</th><th>Difficulté recommandée</th><th>Qualifications</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table></div>`);
+  const tbody = tableWrap.querySelector("tbody");
+  state.secouristes.forEach(sr => appendPersonnelRow(tbody, sr));
+  container.appendChild(tableWrap);
   return container;
+}
+
+function appendPersonnelRow(tbody, sr) {
+  const initials = (sr.full_name || "").split(" ").filter(Boolean).map(w => w[0]).slice(0, 2).join("").toUpperCase();
+  const avatarStyle = "width:34px;height:34px;border-radius:999px;flex:none;display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:700;color:#fff;background:linear-gradient(135deg, var(--indigo), var(--blue-dark));";
+  const avatarHtml = sr.photo_url
+    ? `<img src="${esc(sr.photo_url)}" style="width:34px;height:34px;border-radius:999px;object-fit:cover;flex:none;" />`
+    : `<div style="${avatarStyle}">${esc(initials)}</div>`;
+
+  const row = elRow(`<tr class="stats-row"></tr>`);
+  row.appendChild(elCell(`<td>
+    <div style="display:flex;align-items:center;gap:10px;">
+      ${avatarHtml}
+      <div class="who-cell" style="cursor:default;">
+        <div class="name">${esc(sr.full_name)}</div>
+        <div class="email">${esc(sr.email)}</div>
+      </div>
+    </div>
+  </td>`));
+  row.appendChild(elCell(`<td style="white-space:nowrap;">${sr.date_naissance ? esc(formatDateFR(sr.date_naissance)) : '<span style="color:var(--text-muted);">—</span>'}</td>`));
+  row.appendChild(elCell(`<td style="max-width:200px;">${sr.adresse ? esc(sr.adresse) : '<span style="color:var(--text-muted);">—</span>'}</td>`));
+
+  const roleTd = elCell(`<td></td>`);
+  const roleSelect = el(`<select class="mini">
+    <option value="PSC" ${sr.niveau === "PSC" ? "selected" : ""}>Premiers Secours Citoyen</option>
+    <option value="PSE1" ${sr.niveau === "PSE1" ? "selected" : ""}>Secouriste</option>
+    <option value="PSE2" ${sr.niveau === "PSE2" ? "selected" : ""}>Équipier-Secouriste</option>
+  </select>`);
+  roleSelect.onchange = (e) => changeNiveau(sr.id, e.target.value);
+  roleTd.appendChild(roleSelect);
+  row.appendChild(roleTd);
+
+  const diffTd = elCell(`<td></td>`);
+  const diffSelect = el(`<select class="mini">
+    <option value="facile" ${sr.difficulty === "facile" ? "selected" : ""}>Facile</option>
+    <option value="moyen" ${sr.difficulty === "moyen" ? "selected" : ""}>Moyen</option>
+    <option value="difficile" ${sr.difficulty === "difficile" ? "selected" : ""}>Difficile</option>
+  </select>`);
+  diffSelect.onchange = (e) => changeDifficulty(sr.id, e.target.value);
+  diffTd.appendChild(diffSelect);
+  row.appendChild(diffTd);
+
+  const qualTd = elCell(`<td style="white-space:nowrap;"></td>`);
+  const chefPill = el(`<span class="qual-pill ${sr.is_chef_equipe ? "on" : ""}" style="margin-right:6px;">Chef d'équipe</span>`);
+  chefPill.onclick = () => toggleChefEquipe(sr.id, !sr.is_chef_equipe);
+  qualTd.appendChild(chefPill);
+  const conduitePill = el(`<span class="qual-pill ${sr.has_conduite_module ? "on" : ""}">Conduite</span>`);
+  conduitePill.onclick = () => toggleConduiteModule(sr.id, !sr.has_conduite_module);
+  qualTd.appendChild(conduitePill);
+  row.appendChild(qualTd);
+
+  tbody.appendChild(row);
 }
 
 /* ============================================================
@@ -3483,13 +3593,7 @@ function renderProgress() {
    ============================================================ */
 function renderFormateur() {
   const container = el(`<div></div>`);
-  container.appendChild(el(`<div class="page-header">${iconChip("users", {color: "indigo"})}<div><div class="page-title">Personnels</div><div class="page-sub">Suivi de progression et difficulté recommandée.</div></div></div>`));
-
-  container.appendChild(el(`<div class="card">
-    <h3>Code formateur</h3>
-    <p class="help">Communiquez ce code à un collègue pour qu'il crée lui aussi un compte formateur (à saisir lors de son inscription, champ « Je suis formateur »). Modifiable depuis Administration.</p>
-    <div style="font-family:monospace;font-weight:700;font-size:14px;background:var(--surface-1);border:1px solid var(--border);border-radius:8px;padding:8px 12px;display:inline-block;">${esc(state.formateurCode || "…")}</div>
-  </div>`));
+  container.appendChild(el(`<div class="page-header">${iconChip("chart", {color: "indigo"})}<div><div class="page-title">Mes statistiques</div><div class="page-sub">Suivi de progression des secouristes, en lecture seule.</div></div></div>`));
 
   if (state.secouristes === "loading") {
     container.appendChild(el(`<div class="card"><div class="empty-state">Chargement de la liste des secouristes…</div></div>`));
@@ -3523,68 +3627,85 @@ function renderFormateur() {
     return container;
   }
 
-  list.forEach(sr => {
-    const pct = sr.total ? Math.round(sr.correct / sr.total * 100) : null;
-    const card = el(`<div class="card" style="margin-bottom:12px;">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
-        <div>
-          <div style="font-weight:700;font-size:14.5px;">${sr.full_name}</div>
-          <div style="font-size:12px;color:var(--text-muted);">${sr.email}</div>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <label style="font-size:12px;color:var(--text-secondary);font-weight:600;">Rôle</label>
-          <select id="niveauSelect-${sr.id}" style="font-size:13px;padding:5px 8px;border-radius:7px;border:1px solid var(--border);">
-            <option value="PSC" ${sr.niveau === "PSC" ? "selected" : ""}>Premiers Secours Citoyen</option>
-            <option value="PSE1" ${sr.niveau === "PSE1" ? "selected" : ""}>Secouriste</option>
-            <option value="PSE2" ${sr.niveau === "PSE2" ? "selected" : ""}>Équipier-Secouriste</option>
-          </select>
-          <label style="font-size:12px;color:var(--text-secondary);font-weight:600;">Difficulté recommandée</label>
-          <select id="diffSelect-${sr.id}" style="font-size:13px;padding:5px 8px;border-radius:7px;border:1px solid var(--border);">
-            <option value="facile" ${sr.difficulty === "facile" ? "selected" : ""}>Facile</option>
-            <option value="moyen" ${sr.difficulty === "moyen" ? "selected" : ""}>Moyen</option>
-            <option value="difficile" ${sr.difficulty === "difficile" ? "selected" : ""}>Difficile</option>
-          </select>
-        </div>
-      </div>
-      <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;">
-        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--text-secondary);cursor:pointer;">
-          <input type="checkbox" id="chefCk-${sr.id}" ${sr.is_chef_equipe ? "checked" : ""}> Chef d'équipe
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--text-secondary);cursor:pointer;">
-          <input type="checkbox" id="conduiteCk-${sr.id}" ${sr.has_conduite_module ? "checked" : ""}> Module conduite (permis &gt; 3 ans)
-        </label>
-      </div>
-      <div class="stat-grid" style="margin-top:12px;">
-        <div class="stat-tile"><div class="val">${sr.total}</div><div class="lbl">Questions répondues</div></div>
-        <div class="stat-tile"><div class="val">${pct === null ? "—" : pct + "%"}</div><div class="lbl">Taux de réussite</div></div>
-      </div>
-      ${sr.by_theme && sr.by_theme.length ? '<div style="margin-top:12px;" id="themes-' + sr.id + '"></div>' : ""}
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
-        <button class="btn secondary" id="trainBtn-${sr.id}">Suivi de formation initiale</button>
-        <button class="btn secondary" id="parcoursBtn-${sr.id}">Mon parcours</button>
-      </div>
-    </div>`);
-    card.querySelector("#trainBtn-" + sr.id).onclick = () => goToLearnerTraining(sr.id);
-    card.querySelector("#parcoursBtn-" + sr.id).onclick = () => goToLearnerParcours(sr.id);
-    card.querySelector("#niveauSelect-" + sr.id).onchange = (e) => changeNiveau(sr.id, e.target.value);
-    card.querySelector("#diffSelect-" + sr.id).onchange = (e) => changeDifficulty(sr.id, e.target.value);
-    card.querySelector("#chefCk-" + sr.id).onchange = (e) => toggleChefEquipe(sr.id, e.target.checked);
-    card.querySelector("#conduiteCk-" + sr.id).onchange = (e) => toggleConduiteModule(sr.id, e.target.checked);
+  // 29/08/2026 : page recentrée sur les statistiques pures (lecture seule) — les réglages de compte
+  // (fonction, difficulté recommandée, qualifications) ont été déplacés vers "Gestion du personnel",
+  // à la demande du porteur de projet, pour ne pas mélanger pilotage de compte et suivi de progression.
+  const tableWrap = el(`<div class="stats-table-wrap"><table class="stats-table">
+    <thead><tr>
+      <th>Secouriste</th><th>Fonction</th><th>Progression</th><th></th>
+    </tr></thead>
+    <tbody></tbody>
+  </table></div>`);
+  const tbody = tableWrap.querySelector("tbody");
+  list.forEach(sr => appendStatsRow(tbody, sr));
+  container.appendChild(tableWrap);
+
+  return container;
+}
+
+// 29/08/2026 : passage de "Mes statistiques" en tableau (demande du porteur de projet — la vue en
+// cartes empilées, avec tous les contrôles toujours dépliés, devenait lourde à parcourir dès qu'il y a
+// plusieurs secouristes). Un seul en-tête de tableau, une ligne compacte par secouriste, et le détail
+// (progression par thématique + actions) se déplie au clic plutôt que d'être toujours affiché.
+// Recentré sur les statistiques pures le 29/08/2026 (suite) : les réglages de compte (fonction,
+// difficulté, qualifications) ont été déplacés vers "Gestion du personnel" — voir appendPersonnelRow.
+function appendStatsRow(tbody, sr) {
+  const pct = sr.total ? Math.round(sr.correct / sr.total * 100) : null;
+  const expanded = state.statsExpandedId === sr.id;
+
+  const row = elRow(`<tr class="stats-row"></tr>`);
+  row.appendChild(elCell(`<td class="who-cell" style="cursor:pointer;">
+    <div class="name">${esc(sr.full_name)}</div>
+    <div class="email">${esc(sr.email)}</div>
+  </td>`));
+  row.appendChild(elCell(`<td>${esc(niveauShortLabel(sr.niveau))}</td>`));
+
+  const progTd = elCell(`<td style="white-space:nowrap;"></td>`);
+  if (pct === null) {
+    progTd.appendChild(el(`<span style="color:var(--text-muted);font-size:12.5px;">Pas encore pratiqué</span>`));
+  } else {
+    progTd.appendChild(el(`<span class="mini-bar-outer" style="margin-right:8px;"><span class="mini-bar-inner ${progressBarClass(pct)}" style="width:${pct}%;"></span></span><span style="font-variant-numeric:tabular-nums;font-weight:700;font-size:12.5px;">${pct}%</span> <span style="color:var(--text-muted);font-size:11.5px;">(${sr.total})</span>`));
+  }
+  row.appendChild(progTd);
+
+  const expandTd = elCell(`<td style="text-align:right;"></td>`);
+  const expandBtn = el(`<button class="expand-btn">${expanded ? "Réduire ▴" : "Détails ▾"}</button>`);
+  expandTd.appendChild(expandBtn);
+  row.appendChild(expandTd);
+
+  const toggleExpand = () => { state.statsExpandedId = expanded ? null : sr.id; render(); };
+  row.querySelector(".who-cell").onclick = toggleExpand;
+  expandBtn.onclick = toggleExpand;
+
+  tbody.appendChild(row);
+
+  if (expanded) {
+    const detailRow = elRow(`<tr class="stats-detail-row"><td colspan="4"></td></tr>`);
+    const cell = detailRow.querySelector("td");
     if (sr.by_theme && sr.by_theme.length) {
-      const wrap = card.querySelector("#themes-" + sr.id);
+      const themesWrap = el(`<div style="margin-bottom:14px;"></div>`);
       sr.by_theme.slice().sort((a, b) => themeLabel(a.theme).localeCompare(themeLabel(b.theme))).forEach(st => {
         const p = Math.round(st.correct / st.total * 100);
-        wrap.appendChild(el(`<div class="theme-row">
-          <span class="name">${themeLabel(st.theme)}</span>
+        themesWrap.appendChild(el(`<div class="theme-row">
+          <span class="name">${esc(themeLabel(st.theme))}</span>
           <span class="bar-outer"><span class="bar-inner ${progressBarClass(p)}" style="width:${p}%"></span></span>
           <span class="pct">${p}%</span>
         </div>`));
       });
+      cell.appendChild(themesWrap);
+    } else {
+      cell.appendChild(el(`<p class="help" style="margin:0 0 14px;">Pas encore de progression par thématique.</p>`));
     }
-    container.appendChild(card);
-  });
-
-  return container;
+    const actionsRow = el(`<div style="display:flex;gap:8px;flex-wrap:wrap;"></div>`);
+    const trainBtn = el(`<button class="btn secondary">Suivi de formation initiale</button>`);
+    trainBtn.onclick = () => goToLearnerTraining(sr.id);
+    actionsRow.appendChild(trainBtn);
+    const parcoursBtn = el(`<button class="btn secondary">Mon parcours</button>`);
+    parcoursBtn.onclick = () => goToLearnerParcours(sr.id);
+    actionsRow.appendChild(parcoursBtn);
+    cell.appendChild(actionsRow);
+    tbody.appendChild(detailRow);
+  }
 }
 
 /* ============================================================
@@ -4546,51 +4667,209 @@ function renderDocuments() {
   }
 
   const fonction = state.docFilter.fonction;
-  const docsForFonction = state.documents.filter(d => d.fonction === fonction);
+  // Point 11 (29/08/2026) : un document est visible sur un onglet s'il y est en fonction principale
+  // OU en fonction additionnelle (document_fonctions).
+  const docsForFonction = state.documents.filter(d => d.fonction === fonction || (d.extra_fonctions || []).includes(fonction));
   if (docsForFonction.length === 0) {
     container.appendChild(el(`<div class="card"><div class="empty-state">Aucun document disponible pour le moment dans « ${esc(fonctionLabel(fonction))} ».</div></div>`));
     return container;
   }
 
-  const groups = {};
-  docsForFonction.forEach(d => {
-    const key = d.theme || "__general";
-    (groups[key] = groups[key] || []).push(d);
-  });
-  const keys = Object.keys(groups).sort((a, b) => {
-    if (a === "__general") return 1;
-    if (b === "__general") return -1;
-    return groupLabel(a, fonction).localeCompare(groupLabel(b, fonction));
-  });
+  // Groupement par dossier : uniquement si au moins un document de cet onglet utilise un dossier —
+  // sinon on garde l'affichage d'origine (thématiques seules), pour ne rien changer pour ceux qui
+  // n'utilisent pas cette fonctionnalité.
+  const usesFolders = docsForFonction.some(d => d.folder_id);
+  const folderLabel = (id) => {
+    const f = state.docFolders.find(f => f.id === id);
+    return f ? f.label : "Dossier supprimé";
+  };
 
-  keys.forEach(key => {
-    const label = key === "__general" ? "Général" : groupLabel(key, fonction);
-    container.appendChild(el(`<h3 style="margin-top:18px;">${esc(label)}</h3>`));
-    groups[key].forEach(doc => container.appendChild(renderDocCard(doc)));
-  });
+  function renderThemeGroups(docs, parent) {
+    const groups = {};
+    docs.forEach(d => {
+      const key = d.theme || "__general";
+      (groups[key] = groups[key] || []).push(d);
+    });
+    const keys = Object.keys(groups).sort((a, b) => {
+      if (a === "__general") return 1;
+      if (b === "__general") return -1;
+      return groupLabel(a, fonction).localeCompare(groupLabel(b, fonction));
+    });
+    keys.forEach(key => {
+      const label = key === "__general" ? "Général" : groupLabel(key, fonction);
+      parent.appendChild(el(`<h3 style="margin-top:18px;">${esc(label)}</h3>`));
+      groups[key].forEach(doc => parent.appendChild(renderDocCard(doc)));
+    });
+  }
+
+  if (!usesFolders) {
+    renderThemeGroups(docsForFonction, container);
+  } else {
+    const byFolder = {};
+    docsForFonction.forEach(d => {
+      const key = d.folder_id || "__none";
+      (byFolder[key] = byFolder[key] || []).push(d);
+    });
+    const folderKeys = Object.keys(byFolder).sort((a, b) => {
+      if (a === "__none") return 1;
+      if (b === "__none") return -1;
+      return folderLabel(a).localeCompare(folderLabel(b));
+    });
+    folderKeys.forEach(key => {
+      const label = key === "__none" ? "Sans dossier" : folderLabel(key);
+      container.appendChild(el(`<div class="page-header" style="margin:20px 0 8px;">${iconChip("folder", { size: "sm", color: "amber" })}<div><h3 style="margin:0;">${esc(label)}</h3></div></div>`));
+      renderThemeGroups(byFolder[key], container);
+    });
+  }
 
   return container;
 }
 
+// Point 12 (29/08/2026) : détermine si un type de fichier peut être prévisualisé en ligne (PDF, image,
+// vidéo) sans le télécharger. Les autres types (Word, Excel, PowerPoint...) restent en téléchargement
+// uniquement — pas de visualiseur intégré disponible pour ces formats dans l'application.
+function docPreviewKind(mimeType) {
+  if (!mimeType) return null;
+  if (mimeType === "application/pdf") return "pdf";
+  if (mimeType.indexOf("image/") === 0) return "image";
+  if (mimeType.indexOf("video/") === 0) return "video";
+  return null;
+}
+
 function renderDocCard(doc) {
-  const card = el(`<div class="card" style="display:flex;align-items:center;gap:14px;padding:14px 16px;margin-bottom:10px;flex-wrap:wrap;">
-    <div style="flex:none;width:44px;height:44px;border-radius:10px;background:var(--blue-light);color:var(--blue-dark);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:11px;">${docIcon(doc)}</div>
-    <div style="flex:1;min-width:180px;">
-      <div style="font-weight:700;font-size:14px;">${esc(doc.title)}</div>
-      <div style="font-size:12px;color:var(--text-muted);">${doc.description ? esc(doc.description) + " · " : ""}${doc.kind === "file" ? humanSize(doc.file_size) : "Lien externe"}${doc.uploaded_by_name ? " · Ajouté par " + esc(doc.uploaded_by_name) : ""}</div>
-    </div>
-    <div style="flex:none;display:flex;gap:8px;" id="docActions-${doc.id}"></div>
+  const previewKind = doc.kind === "file" ? docPreviewKind(doc.mime_type) : null;
+  const extraFonctions = doc.extra_fonctions || [];
+  const card = el(`<div class="card" style="padding:14px 16px;margin-bottom:10px;"></div>`);
+  const row = el(`<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;"></div>`);
+  row.appendChild(el(`<div style="flex:none;width:44px;height:44px;border-radius:10px;background:var(--blue-light);color:var(--blue-dark);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:11px;">${docIcon(doc)}</div>`));
+  const infoCol = el(`<div style="flex:1;min-width:180px;">
+    <div style="font-weight:700;font-size:14px;">${esc(doc.title)}</div>
+    <div style="font-size:12px;color:var(--text-muted);">${doc.description ? esc(doc.description) + " · " : ""}${doc.kind === "file" ? humanSize(doc.file_size) : "Lien externe"}${doc.uploaded_by_name ? " · Ajouté par " + esc(doc.uploaded_by_name) : ""}</div>
   </div>`);
-  const actions = card.querySelector("#docActions-" + doc.id);
+  if (extraFonctions.length > 0) {
+    const tagRow = el(`<div class="tagset" style="margin-top:5px;"></div>`);
+    tagRow.appendChild(el(`<span class="tag">${esc(fonctionLabel(doc.fonction))}</span>`));
+    extraFonctions.forEach(f => tagRow.appendChild(el(`<span class="tag tag-blue">${esc(fonctionLabel(f))}</span>`)));
+    infoCol.appendChild(tagRow);
+  }
+  row.appendChild(infoCol);
+
+  const actions = el(`<div style="flex:none;display:flex;gap:8px;flex-wrap:wrap;"></div>`);
+  if (previewKind) {
+    const previewBtn = el(`<button class="btn secondary">Aperçu</button>`);
+    previewBtn.onclick = () => openDocPreview(doc, previewKind);
+    actions.appendChild(previewBtn);
+  }
   const openBtn = el(`<button class="btn secondary">${doc.kind === "link" ? "Ouvrir" : "Télécharger"}</button>`);
   openBtn.onclick = () => openDocument(doc);
   actions.appendChild(openBtn);
   if (isFormateur()) {
+    const manageBtn = el(`<button class="btn secondary">Gérer</button>`);
+    manageBtn.onclick = () => toggleDocMetaEdit(doc);
+    actions.appendChild(manageBtn);
     const delBtn = el(`<button class="btn secondary" style="color:var(--critical);">Supprimer</button>`);
     delBtn.onclick = () => deleteDocument(doc);
     actions.appendChild(delBtn);
   }
+  row.appendChild(actions);
+  card.appendChild(row);
+
+  if (state.docMetaEdit.open === doc.id) {
+    card.appendChild(renderDocMetaEditPanel(doc));
+  }
+
   return card;
+}
+
+// Panneau d'édition inline (staff) : dossier + fonctions additionnelles d'un document déjà créé.
+function renderDocMetaEditPanel(doc) {
+  const m = state.docMetaEdit;
+  const panel = el(`<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);"></div>`);
+
+  panel.appendChild(el(`<label style="display:block;font-size:12px;font-weight:700;margin-bottom:6px;">Dossier</label>`));
+  const folderSelect = el(`<select style="width:100%;margin-bottom:12px;padding:8px 10px;font-size:13px;border-radius:8px;border:1px solid var(--border);background:var(--surface-1);"></select>`);
+  folderSelect.appendChild(el(`<option value="">Sans dossier</option>`));
+  state.docFolders.forEach(f => folderSelect.appendChild(el(`<option value="${esc(f.id)}">${esc(f.label)}</option>`)));
+  folderSelect.value = m.folderId || "";
+  folderSelect.onchange = (e) => { m.folderId = e.target.value; };
+  panel.appendChild(folderSelect);
+
+  panel.appendChild(el(`<label style="display:block;font-size:12px;font-weight:700;margin-bottom:6px;">Aussi visible pour</label>`));
+  const chipRow = el(`<div class="choice-row" style="margin-bottom:12px;"></div>`);
+  FONCTIONS.filter(fo => fo.id !== doc.fonction).forEach(fo => {
+    const selected = m.extraFonctions.includes(fo.id);
+    const chip = el(`<div class="chip ${selected ? "selected" : ""}">${esc(fo.label)}</div>`);
+    chip.onclick = () => {
+      if (m.extraFonctions.includes(fo.id)) m.extraFonctions = m.extraFonctions.filter(x => x !== fo.id);
+      else m.extraFonctions = m.extraFonctions.concat([fo.id]);
+      render();
+    };
+    chipRow.appendChild(chip);
+  });
+  panel.appendChild(chipRow);
+
+  if (m.error) panel.appendChild(el(`<p class="help" style="color:var(--critical);margin-bottom:10px;">${esc(m.error)}</p>`));
+
+  const saveBtn = el(`<button class="btn" ${m.busy ? "disabled" : ""}>${m.busy ? "Enregistrement…" : "Enregistrer"}</button>`);
+  saveBtn.onclick = () => submitDocMetaEdit(doc);
+  panel.appendChild(saveBtn);
+  return panel;
+}
+
+function toggleDocMetaEdit(doc) {
+  if (state.docMetaEdit.open === doc.id) {
+    state.docMetaEdit = { open: null, folderId: "", extraFonctions: [], busy: false, error: null };
+  } else {
+    state.docMetaEdit = { open: doc.id, folderId: doc.folder_id || "", extraFonctions: (doc.extra_fonctions || []).slice(), busy: false, error: null };
+  }
+  render();
+}
+
+async function submitDocMetaEdit(doc) {
+  const m = state.docMetaEdit;
+  m.busy = true; m.error = null; render();
+  const r = await rpc("app_set_document_meta", {
+    p_token: state.auth.token, p_document_id: doc.id,
+    p_folder_id: m.folderId || null, p_extra_fonctions: m.extraFonctions
+  });
+  m.busy = false;
+  if (!r || r.error) { m.error = "Impossible d'enregistrer ces changements."; render(); return; }
+  state.docMetaEdit = { open: null, folderId: "", extraFonctions: [], busy: false, error: null };
+  goToDocuments();
+}
+
+// Point 12 (29/08/2026) : ouvre l'aperçu en ligne (overlay) plutôt que de forcer un téléchargement.
+async function openDocPreview(doc, kind) {
+  const r = await documentsFn("download_url", { document_id: doc.id });
+  if (!r || r.error || !r.url) { alert("Impossible d'afficher l'aperçu pour le moment."); return; }
+  state.docPreview = { title: doc.title, url: r.url, kind };
+  render();
+}
+function closeDocPreview() { state.docPreview = null; render(); }
+
+function renderDocPreviewOverlay() {
+  const p = state.docPreview;
+  const overlay = el(`<div style="position:fixed;inset:0;background:rgba(6,10,20,0.75);z-index:60;display:flex;align-items:center;justify-content:center;padding:24px;"></div>`);
+  overlay.onclick = (e) => { if (e.target === overlay) closeDocPreview(); };
+  const box = el(`<div style="background:#fff;border-radius:14px;max-width:960px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;"></div>`);
+  const header = el(`<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border);"><div style="font-weight:700;font-size:14.5px;"></div></div>`);
+  header.querySelector("div").textContent = p.title;
+  const closeBtn = el(`<button class="btn secondary" style="padding:6px 12px;">Fermer</button>`);
+  closeBtn.onclick = closeDocPreview;
+  header.appendChild(closeBtn);
+  box.appendChild(header);
+
+  const body = el(`<div style="flex:1;overflow:auto;background:#f3f4f6;display:flex;align-items:center;justify-content:center;min-height:300px;"></div>`);
+  if (p.kind === "pdf") {
+    body.appendChild(el(`<iframe src="${esc(p.url)}" style="width:100%;height:78vh;border:none;"></iframe>`));
+  } else if (p.kind === "image") {
+    body.appendChild(el(`<img src="${esc(p.url)}" style="max-width:100%;max-height:78vh;object-fit:contain;" />`));
+  } else if (p.kind === "video") {
+    body.appendChild(el(`<video src="${esc(p.url)}" controls style="max-width:100%;max-height:78vh;"></video>`));
+  }
+  box.appendChild(body);
+  overlay.appendChild(box);
+  return overlay;
 }
 
 async function openDocument(doc) {
@@ -4613,7 +4892,31 @@ function renderDocFormToggleCard() {
   toggleBtn.onclick = () => { state.docForm.open = !state.docForm.open; render(); };
   wrap.appendChild(toggleBtn);
   if (state.docForm.open) wrap.appendChild(renderDocForm());
+  if (state.docFolders.length > 0) wrap.appendChild(renderDocFolderManager());
   return wrap;
+}
+
+// Point 11 (29/08/2026) : liste compacte des dossiers existants avec suppression (le dossier
+// disparaît, les documents qu'il contenait ne sont PAS supprimés — ils repassent "Sans dossier").
+function renderDocFolderManager() {
+  const wrap = el(`<div style="margin-bottom:16px;"></div>`);
+  const row = el(`<div class="choice-row"></div>`);
+  state.docFolders.forEach(f => {
+    const chip = el(`<div class="chip" style="display:inline-flex;align-items:center;gap:8px;cursor:default;">${esc(f.label)}</div>`);
+    const delX = el(`<span style="cursor:pointer;font-weight:800;color:var(--critical);">×</span>`);
+    delX.onclick = () => deleteDocFolder(f);
+    chip.appendChild(delX);
+    row.appendChild(chip);
+  });
+  wrap.appendChild(row);
+  return wrap;
+}
+
+async function deleteDocFolder(folder) {
+  if (!confirm("Supprimer le dossier « " + folder.label + " » ? Les documents qu'il contient ne seront pas supprimés, seulement détachés du dossier.")) return;
+  const r = await rpc("app_delete_document_folder", { p_token: state.auth.token, p_folder_id: folder.id });
+  if (!r || r.error) { alert("Impossible de supprimer ce dossier."); return; }
+  goToDocuments();
 }
 
 function renderDocForm() {
@@ -4638,6 +4941,38 @@ function renderDocForm() {
     fonctionRow.appendChild(chip);
   });
   card.appendChild(fonctionRow);
+
+  // Point 11 (29/08/2026) : fonctions additionnelles — le document reste rattaché à sa fonction
+  // principale ci-dessus, mais peut aussi être visible sur d'autres fonctions.
+  card.appendChild(el(`<label style="display:block;font-size:12.5px;font-weight:700;margin-bottom:6px;">Aussi visible pour (optionnel)</label>`));
+  const extraRow = el(`<div class="choice-row" style="margin-bottom:12px;"></div>`);
+  FONCTIONS.filter(fo => fo.id !== f.fonction).forEach(fo => {
+    const selected = f.extraFonctions.includes(fo.id);
+    const chip = el(`<div class="chip ${selected ? "selected" : ""}">${esc(fo.label)}</div>`);
+    chip.onclick = () => {
+      if (f.extraFonctions.includes(fo.id)) f.extraFonctions = f.extraFonctions.filter(x => x !== fo.id);
+      else f.extraFonctions = f.extraFonctions.concat([fo.id]);
+      render();
+    };
+    extraRow.appendChild(chip);
+  });
+  card.appendChild(extraRow);
+
+  // Point 11 (29/08/2026) : dossier optionnel, avec création rapide sans quitter le formulaire.
+  card.appendChild(el(`<label style="display:block;font-size:12.5px;font-weight:700;margin-bottom:6px;">Dossier (optionnel)</label>`));
+  const folderRow = el(`<div style="display:flex;gap:8px;margin-bottom:6px;"></div>`);
+  const folderSelect = el(`<select style="${inputStyle}margin-bottom:0;flex:1;"></select>`);
+  folderSelect.appendChild(el(`<option value="">Sans dossier</option>`));
+  state.docFolders.forEach(fo => folderSelect.appendChild(el(`<option value="${esc(fo.id)}">${esc(fo.label)}</option>`)));
+  folderSelect.value = f.folderId || "";
+  folderSelect.onchange = (e) => { f.folderId = e.target.value; };
+  folderRow.appendChild(folderSelect);
+  const newFolderBtn = el(`<button type="button" class="btn secondary" style="flex:none;">+ Dossier</button>`);
+  newFolderBtn.onclick = () => { state.docFolderForm.open = !state.docFolderForm.open; render(); };
+  folderRow.appendChild(newFolderBtn);
+  card.appendChild(folderRow);
+  if (state.docFolderForm.open) card.appendChild(renderDocFolderForm());
+  card.appendChild(el(`<div style="margin-bottom:6px;"></div>`));
 
   if (f.fonction === "PSE1" || f.fonction === "PSE2") {
     const themeSelect = el(`<select style="${inputStyle}"></select>`);
@@ -4686,9 +5021,42 @@ function renderDocForm() {
   return card;
 }
 
+// Point 11 (29/08/2026) : création rapide d'un dossier depuis le formulaire d'ajout de document.
+function renderDocFolderForm() {
+  const ff = state.docFolderForm;
+  const wrap = el(`<div style="display:flex;gap:8px;margin-bottom:12px;align-items:flex-start;"></div>`);
+  const input = el(`<input type="text" placeholder="Nom du dossier" style="flex:1;padding:8px 10px;font-size:13px;border-radius:8px;border:1px solid var(--border);background:var(--surface-1);font-family:inherit;" value="${esc(ff.label)}">`);
+  input.oninput = (e) => { ff.label = e.target.value; };
+  wrap.appendChild(input);
+  const createBtn = el(`<button type="button" class="btn" style="flex:none;" ${ff.busy ? "disabled" : ""}>${ff.busy ? "…" : "Créer"}</button>`);
+  createBtn.onclick = submitDocFolderForm;
+  wrap.appendChild(createBtn);
+  if (ff.error) {
+    const errWrap = el(`<div style="width:100%;"></div>`);
+    errWrap.appendChild(wrap);
+    errWrap.appendChild(el(`<p class="help" style="color:var(--critical);">${esc(ff.error)}</p>`));
+    return errWrap;
+  }
+  return wrap;
+}
+
+async function submitDocFolderForm() {
+  const ff = state.docFolderForm;
+  if (!ff.label || !ff.label.trim()) { ff.error = "Merci d'indiquer un nom."; render(); return; }
+  ff.busy = true; ff.error = null; render();
+  const r = await rpc("app_create_document_folder", { p_token: state.auth.token, p_label: ff.label.trim() });
+  ff.busy = false;
+  if (!r || r.error || !r.id) { ff.error = "Impossible de créer ce dossier."; render(); return; }
+  state.docFolders.push({ id: r.id, label: ff.label.trim() });
+  state.docFolders.sort((a, b) => a.label.localeCompare(b.label));
+  state.docForm.folderId = r.id;
+  state.docFolderForm = { open: false, label: "", busy: false, error: null };
+  render();
+}
+
 function resetDocForm() {
   const keepFonction = state.docForm.fonction;
-  state.docForm = { open: false, kind: "file", title: "", description: "", fonction: keepFonction, theme: "", url: "", file: null, busy: false, error: null, progress: 0 };
+  state.docForm = { open: false, kind: "file", title: "", description: "", fonction: keepFonction, theme: "", url: "", file: null, busy: false, error: null, progress: 0, folderId: "", extraFonctions: [] };
 }
 
 function uploadFileToSignedUrl(uploadUrl, file, onProgress) {
@@ -4717,7 +5085,8 @@ async function submitDocForm() {
     f.busy = true; render();
     const r = await rpc("app_add_document_link", {
       p_token: state.auth.token, p_title: f.title, p_description: f.description,
-      p_fonction: f.fonction, p_theme: f.theme, p_url: f.url
+      p_fonction: f.fonction, p_theme: f.theme, p_url: f.url,
+      p_folder_id: f.folderId || null, p_extra_fonctions: f.extraFonctions
     });
     f.busy = false;
     if (!r || r.error) { f.error = "Impossible d'ajouter ce lien."; render(); return; }
@@ -4732,7 +5101,8 @@ async function submitDocForm() {
   f.busy = true; f.progress = 0; render();
   const initRes = await documentsFn("init_upload", {
     title: f.title, description: f.description, fonction: f.fonction, theme: f.theme,
-    file_name: f.file.name, mime_type: f.file.type || "application/octet-stream", file_size: f.file.size
+    file_name: f.file.name, mime_type: f.file.type || "application/octet-stream", file_size: f.file.size,
+    folder_id: f.folderId || null, extra_fonctions: f.extraFonctions
   });
   if (!initRes || initRes.error || !initRes.upload_url) {
     f.busy = false;
