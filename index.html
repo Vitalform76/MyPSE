@@ -411,6 +411,7 @@
   .feedback.ko { background: #fdeeee; color: #6e1414; border: 1px solid #f2c2c2; }
   .feedback .fb-title { font-weight: 700; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
   .actions-row { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+  .mini-help { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
   .stat-tile { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: linear-gradient(160deg, var(--surface-1), var(--card)); transition: box-shadow .12s ease; }
   .stat-tile:hover { box-shadow: var(--shadow-sm); }
   .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 4px; }
@@ -1165,7 +1166,7 @@ const state = {
   accounts: null,
   adminSettingsForm: { disclaimer_message: null, referentiel_banner: null, formateur_code: null, busy: {}, error: {} },
   sessions: null,
-  sessionForm: { open: false, editingId: null, title: "", startsAt: "", fonction: "PSE1", theme: "", description: "", quizEnabled: true, quizThemes: "all", quizDifficulties: ["moyen"], quizMode: "entrainement", quizCount: 15, busy: false, error: null },
+  sessionForm: { open: false, editingId: null, title: "", startsAt: "", fonction: "PSE1", theme: "", description: "", endsAt: "", location: "", animator: "", equipment: "", status: "prevue", report: "", quizEnabled: true, quizThemes: "all", quizDifficulties: ["moyen"], quizMode: "entrainement", quizCount: 15, busy: false, error: null },
   createProfileForm: { fullName: "", email: "", password: "", role: "secouriste", niveau: "PSE1", busy: false, error: null, successMsg: null },
   questionsAdmin: { loading: false, error: false, selectedTheme: null },
   themeForm: { open: false, editingId: null, id: "", label: "", level: "PSE1", busy: false, error: null },
@@ -1490,6 +1491,7 @@ async function doLogout() {
   state.accounts = null;
   state.formateurCode = null;
   state.sessions = null;
+  EXTRAS.mt = null; EXTRAS.mtFor = null;
   resetSessionForm();
   state.mobileSidebarOpen = false;
   state.view = "auth";
@@ -1516,6 +1518,7 @@ async function goToHome() {
     render();
     return;
   }
+  loadMyTrainings(true);
   state.myProgress = "loading";
   state.sessions = "loading";
   state.myParcours = "loading";
@@ -2100,7 +2103,7 @@ async function goToSessions() {
 }
 
 function resetSessionForm() {
-  state.sessionForm = { open: false, editingId: null, title: "", startsAt: "", fonction: "PSE1", theme: "", description: "", quizEnabled: true, quizThemes: "all", quizDifficulties: ["moyen"], quizMode: "entrainement", quizCount: 15, busy: false, error: null };
+  state.sessionForm = { open: false, editingId: null, title: "", startsAt: "", fonction: "PSE1", theme: "", description: "", endsAt: "", location: "", animator: "", equipment: "", status: "prevue", report: "", quizEnabled: true, quizThemes: "all", quizDifficulties: ["moyen"], quizMode: "entrainement", quizCount: 15, busy: false, error: null };
 }
 
 // Ajouté le 20/08/2026 (soir) — point 15 de la liste du porteur de projet : ouvre le formulaire
@@ -2116,6 +2119,12 @@ function openEditSessionForm(session) {
     fonction: session.fonction,
     theme: session.theme || "",
     description: session.description || "",
+    endsAt: session.ends_at ? toDatetimeLocalValue(session.ends_at) : "",
+    location: session.location || "",
+    animator: session.animator_name || "",
+    equipment: session.equipment || "",
+    status: session.status || "prevue",
+    report: session.report || "",
     quizEnabled: !!qc,
     quizThemes: qc && qc.themes ? qc.themes : "all",
     quizDifficulties: qc && qc.difficulties && qc.difficulties.length ? qc.difficulties : ["moyen"],
@@ -2132,6 +2141,8 @@ async function submitSessionForm() {
   if (!f.title || !f.title.trim()) { f.error = "Merci d'indiquer un titre."; render(); return; }
   if (!f.startsAt) { f.error = "Merci d'indiquer une date."; render(); return; }
   const iso = new Date(f.startsAt).toISOString();
+  const endIso = f.endsAt ? new Date(f.endsAt).toISOString() : null;
+  if (endIso && new Date(endIso).getTime() <= new Date(iso).getTime()) { f.error = "L'heure de fin doit être postérieure à l'heure de début."; render(); return; }
   let quizConfig = null;
   if ((f.fonction === "PSE1" || f.fonction === "PSE2") && f.quizEnabled) {
     quizConfig = { themes: f.theme ? [f.theme] : "all", difficulties: f.quizDifficulties, mode: f.quizMode, count: f.quizCount };
@@ -2144,8 +2155,22 @@ async function submitSessionForm() {
   const r = f.editingId
     ? await rpc("app_update_session", Object.assign({ p_session_id: f.editingId }, payload))
     : await rpc("app_create_session", payload);
+  if (!r || r.error) { f.busy = false; f.error = f.editingId ? "Impossible d'enregistrer les modifications." : "Impossible de créer cet entraînement."; render(); return; }
+  // Module entraînements (11/10/2026) : fin, lieu, animateur, matériel, statut et compte rendu sont
+  // enregistrés par une fonction dédiée (app_session_save_details), juste après la séance elle-même.
+  const sessionId = f.editingId || r.id;
+  const d = await rpc("app_session_save_details", {
+    p_token: state.auth.token, p_session_id: sessionId, p_ends_at: endIso, p_location: f.location,
+    p_animator_name: f.animator, p_equipment: f.equipment, p_status: f.status || "prevue", p_report: f.report
+  });
   f.busy = false;
-  if (!r || r.error) { f.error = f.editingId ? "Impossible d'enregistrer les modifications." : "Impossible de créer cet entraînement."; render(); return; }
+  if (!d || d.error) {
+    // La séance existe : on bascule en mode édition pour qu'un nouvel essai ne crée pas de doublon.
+    f.editingId = sessionId;
+    f.error = "La séance est enregistrée, mais ses détails (fin, lieu, animateur, statut) n'ont pas pu l'être. Réessayez avec « Enregistrer les modifications ».";
+    render();
+    return;
+  }
   resetSessionForm();
   goToSessions();
 }
@@ -2481,6 +2506,7 @@ function render() {
   else if (state.view === "fmaOverview") appDiv.appendChild(renderFmaOverview());
   else if (state.view === "learnerParcours") appDiv.appendChild(renderLearnerParcours());
   else if (state.view === "sessions") appDiv.appendChild(renderSessions());
+  else if (state.view === "trainingStats") appDiv.appendChild(renderTrainingStats());
   appDiv.appendChild(renderFooter());
   content.appendChild(appDiv);
   shell.appendChild(content);
@@ -2614,6 +2640,10 @@ function renderSidebar() {
     const suiviBtn = el(`<button class="${state.view === "suiviPedago" ? "active" : ""}"><span class="ic">${svgIcon("users", 15)}</span>Suivi pédagogique</button>`);
     suiviBtn.onclick = () => { goToSuiviPedago(); closeMobileSidebar(); };
     navPedago.appendChild(suiviBtn);
+    // Module entraînements (11/10/2026) : présences, heures et assiduité des secouristes.
+    const tstatsBtn = el(`<button class="${state.view === "trainingStats" ? "active" : ""}"><span class="ic">${svgIcon("calendar", 15)}</span>Suivi des entraînements</button>`);
+    tstatsBtn.onclick = () => { goToTrainingStats(); closeMobileSidebar(); };
+    navPedago.appendChild(tstatsBtn);
     navPedago.appendChild(statsBtn);
     // "Gestion du personnel" (point 17) ouverte au formateur le 29/08/2026 (suite) : les réglages de
     // compte (fonction/difficulté/qualifications) y ont été déplacés depuis "Mes statistiques", qui
@@ -3142,9 +3172,26 @@ function renderPersonFile() {
 async function openAttendance(s) {
   EXTRAS.att = { session: s, loading: true };
   render();
-  const r = await rpc("app_session_attendance_get", { p_token: state.auth.token, p_session: s.id });
-  EXTRAS.att = (r && Array.isArray(r.learners)) ? { session: s, learners: r.learners, present: new Set(r.present || []) } : { session: s, error: true };
+  const r = await rpc("app_session_attendance_get_v2", { p_token: state.auth.token, p_session: s.id });
+  if (r && Array.isArray(r.learners)) {
+    const statuses = {};
+    (r.statuses || []).forEach(x => { statuses[x.account_id] = x.status; });
+    EXTRAS.att = { session: s, learners: r.learners, statuses };
+  } else {
+    EXTRAS.att = { session: s, error: true };
+  }
   render();
+}
+// Marque une séance comme "Réalisée" en conservant ses autres informations (module entraînements).
+async function markSessionDone(session) {
+  const r = await rpc("app_session_save_details", {
+    p_token: state.auth.token, p_session_id: session.id, p_ends_at: session.ends_at || null,
+    p_location: session.location || "", p_animator_name: session.animator_name || "",
+    p_equipment: session.equipment || "", p_status: "realisee", p_report: session.report || ""
+  });
+  if (!r || r.error) return false;
+  session.status = "realisee";
+  return true;
 }
 function printAttendanceSheet(att) {
   const s = att.session;
@@ -3159,36 +3206,80 @@ function renderAttendancePanel() {
   if (!att) return null;
   const card = el(`<div class="card accent" style="margin-bottom:16px;"></div>`);
   card.appendChild(el(`<h3 style="margin:0 0 6px;">Présence — ${esc(att.session.title)}</h3>`));
-  card.appendChild(el(`<div class="help" style="margin-bottom:8px;">${esc(formatSessionDate(att.session.starts_at))}</div>`));
-  if (att.loading) { card.appendChild(el(`<div class="help">Chargement…</div>`)); return card; }
-  if (att.error) { card.appendChild(el(`<div class="help">Impossible de charger la liste.</div>`)); }
+  card.appendChild(el(`<div class="mini-help" style="margin-bottom:8px;">${esc(formatSessionRange(att.session))}</div>`));
+  if (att.loading) { card.appendChild(el(`<div class="mini-help">Chargement…</div>`)); return card; }
+  if (att.error) { card.appendChild(el(`<div class="mini-help">Impossible de charger la liste.</div>`)); }
   else {
+    // P = présent, A = absent, E = excusé. Une case non pointée n'est pas enregistrée.
+    const META = {
+      present: { key: "P", label: "Présent", bg: "var(--good)" },
+      absent: { key: "A", label: "Absent", bg: "var(--critical)" },
+      excuse: { key: "E", label: "Excusé", bg: "var(--warning)" }
+    };
     const count = el(`<div style="font-weight:700;font-size:13px;margin:6px 0;"></div>`);
-    const upd = () => { count.textContent = att.present.size + " présent(s) sur " + att.learners.length; };
-    upd();
-    const search = el(`<input type="text" placeholder="Rechercher un nom" style="width:100%;margin-bottom:8px;">`);
-    const list = el(`<div style="max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:4px 10px;"></div>`);
+    const buttons = [];
+    const paint = () => {
+      const n = { present: 0, absent: 0, excuse: 0 };
+      att.learners.forEach(l => { const st = att.statuses[l.id]; if (st && n[st] !== undefined) n[st]++; });
+      const marked = n.present + n.absent + n.excuse;
+      count.textContent = n.present + " présent(s) · " + n.absent + " absent(s) · " + n.excuse + " excusé(s) · " + (att.learners.length - marked) + " non pointé(s)";
+      buttons.forEach(b => {
+        const on = att.statuses[b.id] === b.status;
+        b.btn.style.background = on ? META[b.status].bg : "var(--surface-1)";
+        b.btn.style.color = on ? "#fff" : "var(--text-primary)";
+        b.btn.style.borderColor = on ? "transparent" : "var(--border)";
+      });
+    };
+    const search = el(`<input type="text" placeholder="Rechercher un nom" style="width:100%;margin-bottom:8px;padding:9px 12px;font-size:14px;border-radius:8px;border:1px solid var(--border);background:var(--surface-1);font-family:inherit;">`);
+    const allPresent = el(`<button class="btn secondary" style="font-size:12px;padding:5px 10px;margin-bottom:8px;">Marquer présents les non pointés</button>`);
+    allPresent.onclick = () => { att.learners.forEach(l => { if (!att.statuses[l.id]) att.statuses[l.id] = "present"; }); paint(); };
+    const list = el(`<div style="max-height:360px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:4px 10px;"></div>`);
     att.learners.forEach(l => {
-      const row = el(`<label style="display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><input type="checkbox" ${att.present.has(l.id) ? "checked" : ""}> <span style="flex:1;">${esc(l.full_name || "")}</span><span class="tag">${esc(l.niveau || "")}</span></label>`);
+      const row = el(`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="flex:1;min-width:150px;">${esc(l.full_name || "")}</span><span class="tag">${esc(l.niveau || "")}</span></div>`);
       row.dataset.name = (l.full_name || "").toLowerCase();
-      row.querySelector("input").onchange = (e) => { if (e.target.checked) att.present.add(l.id); else att.present.delete(l.id); upd(); };
+      const grp = el(`<span style="display:flex;gap:4px;"></span>`);
+      ["present", "absent", "excuse"].forEach(st => {
+        const btn = el(`<button type="button" title="${META[st].label}" style="border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-weight:700;font-size:12.5px;cursor:pointer;font-family:inherit;">${META[st].key}</button>`);
+        btn.onclick = () => { att.statuses[l.id] = st; paint(); };
+        buttons.push({ id: l.id, status: st, btn });
+        grp.appendChild(btn);
+      });
+      row.appendChild(grp);
       list.appendChild(row);
     });
-    search.oninput = () => { const q = search.value.trim().toLowerCase(); list.querySelectorAll("label").forEach(r => { r.style.display = (!q || r.dataset.name.includes(q)) ? "" : "none"; }); };
-    card.appendChild(count); card.appendChild(search); card.appendChild(list);
-    const msg = el(`<div class="help" style="margin-top:6px;"></div>`);
+    search.oninput = () => { const q = search.value.trim().toLowerCase(); list.querySelectorAll("[data-name]").forEach(r => { r.style.display = (!q || r.dataset.name.includes(q)) ? "" : "none"; }); };
+    paint();
+    card.appendChild(count); card.appendChild(search); card.appendChild(allPresent); card.appendChild(list);
+    const msg = el(`<div class="mini-help" style="margin-top:6px;"></div>`);
+    const doneWrap = el(`<div style="margin-top:8px;"></div>`);
     const save = el(`<button class="btn" style="margin-top:10px;">Enregistrer la présence</button>`);
     save.onclick = async () => {
+      const payload = {};
+      att.learners.forEach(l => { if (att.statuses[l.id]) payload[l.id] = att.statuses[l.id]; });
+      const n = Object.keys(payload).length;
+      if (!n) { msg.textContent = "Aucune présence pointée pour le moment."; return; }
       save.disabled = true;
-      const r = await rpc("app_session_attendance_set", { p_token: state.auth.token, p_session: att.session.id, p_present: Array.from(att.present) });
+      const r = await rpc("app_session_attendance_set_v2", { p_token: state.auth.token, p_session: att.session.id, p_statuses: payload });
       save.disabled = false;
-      msg.textContent = r && r.ok ? "Présence enregistrée." : "Enregistrement impossible pour le moment.";
+      if (!r || !r.ok) { msg.textContent = "Enregistrement impossible pour le moment."; return; }
+      msg.textContent = "Présence enregistrée (" + n + " pointé(s)).";
+      doneWrap.innerHTML = "";
+      if (att.session.status !== "realisee") {
+        const done = el(`<button class="btn secondary" style="font-size:12.5px;">Marquer la séance « Réalisée »</button>`);
+        done.onclick = async () => {
+          done.disabled = true;
+          const ok = await markSessionDone(att.session);
+          if (ok) { render(); } else { done.disabled = false; msg.textContent = "Impossible de changer le statut de la séance."; }
+        };
+        doneWrap.appendChild(el(`<div class="mini-help" style="margin-bottom:6px;">Seules les séances « Réalisées » comptent dans les heures et l'assiduité.</div>`));
+        doneWrap.appendChild(done);
+      }
     };
     const pr = el(`<button class="btn secondary" style="margin-top:10px;margin-left:8px;">Imprimer la feuille</button>`);
     pr.onclick = () => printAttendanceSheet(att);
-    card.appendChild(save); card.appendChild(pr); card.appendChild(msg);
+    card.appendChild(save); card.appendChild(pr); card.appendChild(msg); card.appendChild(doneWrap);
   }
-  const close = el(`<button class="btn secondary" style="margin-top:10px;margin-left:8px;">Fermer</button>`);
+  const close = el(`<button class="btn secondary" style="margin-top:10px;">Fermer</button>`);
   close.onclick = () => { EXTRAS.att = null; render(); };
   card.appendChild(close);
   return card;
@@ -3196,11 +3287,11 @@ function renderAttendancePanel() {
 function appendPastSessions(container) {
   if (!isFormateur() || !Array.isArray(state.sessions)) return;
   const now = Date.now();
-  const past = state.sessions.filter(s => new Date(s.starts_at).getTime() < now - 3600000).sort((a, b) => new Date(b.starts_at) - new Date(a.starts_at)).slice(0, 8);
+  const past = state.sessions.filter(s => new Date(s.starts_at).getTime() < now - 3600000).sort((a, b) => new Date(b.starts_at) - new Date(a.starts_at)).slice(0, 12);
   if (!past.length) return;
   const card = el(`<div class="card" style="margin-top:16px;"><h3 style="margin:0 0 10px;">Séances passées (présence)</h3></div>`);
   past.forEach(s => {
-    const row = el(`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--border);"><span style="flex:1;min-width:200px;font-size:13.5px;"><b>${esc(s.title)}</b><br><span style="font-size:12px;color:var(--text-muted);">${esc(formatSessionDate(s.starts_at))}</span></span></div>`);
+    const row = el(`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--border);"><span style="flex:1;min-width:200px;font-size:13.5px;"><b>${esc(s.title)}</b><br><span style="font-size:12px;color:var(--text-muted);">${esc(formatSessionRange(s))}</span></span>${sessionStatusTag(s.status)}</div>`);
     const b = el(`<button class="btn secondary" style="font-size:12px;padding:5px 10px;">Présence</button>`);
     b.onclick = () => openAttendance(s);
     row.appendChild(b); card.appendChild(row);
@@ -3415,7 +3506,8 @@ function renderFormateurHomeContent() {
     { icon: "calendar", color: "teal", title: "Recyclage (FMA)", sub: "Suivi de la formation continue", fn: goToFmaOverview },
     { icon: "clipboard", color: "amber", title: "Questionnaires", sub: "Statistiques et contenus de révision", fn: goToProgress },
     { icon: "folder", color: "good", title: "Documents", sub: "Mémos, fiches et vidéos", fn: goToDocuments },
-    { icon: "calendar", color: "indigo", title: "Calendrier", sub: "Séances et entraînements programmés", fn: goToSessions }
+    { icon: "calendar", color: "indigo", title: "Calendrier", sub: "Séances et entraînements programmés", fn: goToSessions },
+    { icon: "chart", color: "teal", title: "Suivi des entraînements", sub: "Présences, heures et assiduité", fn: goToTrainingStats }
   ];
   if (isAdministrateur()) {
     shortcuts.push({ icon: "users", color: "critical", title: "Administration", sub: "Comptes, rôles et réglages", fn: goToAdmin });
@@ -3449,6 +3541,7 @@ function renderLearnerHomeContent() {
   topWidgetRow.appendChild(renderHomeCalendarWidget());
   topWidgetRow.appendChild(renderHomeInProgressWidget(levelsForTopWidgets));
   container.appendChild(topWidgetRow);
+  container.appendChild(renderMyTrainingsCard());
   const remindersCard = renderHomeRemindersCard();
   if (remindersCard) container.appendChild(remindersCard);
   loadHomeExtras();
@@ -3563,6 +3656,7 @@ function renderHomeCalendarWidget() {
   const now = Date.now();
   const upcoming = state.sessions
     .filter(s => visible.includes(s.fonction) && new Date(s.starts_at).getTime() >= now - 3600000)
+    .filter(s => s.status !== "annulee")
     .sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))
     .slice(0, 3);
 
@@ -6363,6 +6457,27 @@ function formatDateFR(isoDate) {
   return parts[2] + "/" + parts[1] + "/" + parts[0];
 }
 
+// Module entraînements (11/10/2026) : statuts de séance et plage horaire.
+const SESSION_STATUS_LABELS = { prevue: "Prévue", realisee: "Réalisée", annulee: "Annulée", reportee: "Reportée" };
+function sessionStatusTag(status) {
+  const st = status || "prevue";
+  const colors = {
+    prevue: "background:var(--blue-light);color:var(--blue-dark);",
+    realisee: "background:var(--good-light);color:var(--good);",
+    annulee: "background:var(--critical-light);color:var(--critical);",
+    reportee: "background:var(--warning-light);color:var(--amber-dark);"
+  };
+  return `<span class="tag" style="${colors[st] || ""}border-color:transparent;">${esc(SESSION_STATUS_LABELS[st] || st)}</span>`;
+}
+function formatSessionRange(s) {
+  const base = formatSessionDate(s.starts_at);
+  if (!s.ends_at) return base;
+  const a = new Date(s.starts_at), b = new Date(s.ends_at);
+  const time = (d) => d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  if (a.toDateString() === b.toDateString()) return base + " – " + time(b);
+  return base + " → " + formatSessionDate(s.ends_at);
+}
+
 function formatSessionDate(iso) {
   const d = new Date(iso);
   const dateStr = d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
@@ -6434,9 +6549,9 @@ function renderSessionCard(s) {
   card.appendChild(el(`<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
     <div>
       <div style="font-weight:700;font-size:15px;">${esc(s.title)}</div>
-      <div style="font-size:12.5px;color:var(--text-muted);margin-top:2px;">${esc(formatSessionDate(s.starts_at))}</div>
+      <div style="font-size:12.5px;color:var(--text-muted);margin-top:2px;">${esc(formatSessionRange(s))}</div>
     </div>
-    <span class="tag tag-blue">${esc(fonctionLabel(s.fonction))}</span>
+    <span style="display:flex;gap:6px;flex-wrap:wrap;">${s.status && s.status !== "prevue" ? sessionStatusTag(s.status) : ""}<span class="tag tag-blue">${esc(fonctionLabel(s.fonction))}</span></span>
   </div>`));
 
   if (s.theme) {
@@ -6445,6 +6560,19 @@ function renderSessionCard(s) {
   }
 
   if (s.description) card.appendChild(el(`<p style="margin-top:10px;font-size:13.5px;color:var(--text-secondary);">${esc(s.description)}</p>`));
+
+  const practical = [];
+  if (s.location) practical.push(["Lieu", s.location]);
+  if (s.animator_name) practical.push(["Animateur", s.animator_name]);
+  if (s.equipment) practical.push(["Matériel", s.equipment]);
+  if (practical.length) {
+    const box = el(`<div style="margin-top:10px;font-size:13px;color:var(--text-secondary);display:grid;gap:3px;"></div>`);
+    practical.forEach(([k, v]) => box.appendChild(el(`<div><b>${esc(k)} :</b> ${esc(v)}</div>`)));
+    card.appendChild(box);
+  }
+  if (isFormateur() && s.report) {
+    card.appendChild(el(`<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:var(--surface-2);font-size:13px;"><b>Compte rendu (formateurs)</b><br>${esc(s.report)}</div>`));
+  }
 
   const actions = el(`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;"></div>`);
   if (s.quiz_config) {
@@ -6544,6 +6672,41 @@ function renderSessionForm() {
   descInput.oninput = (e) => { f.description = e.target.value; };
   card.appendChild(descInput);
 
+  // Module entraînements (11/10/2026) : informations pratiques de la séance.
+  card.appendChild(el(`<label style="display:block;font-size:12.5px;font-weight:700;margin-bottom:6px;">Heure de fin (optionnel)</label>`));
+  const endInput = el(`<input type="datetime-local" style="${inputStyle}" value="${esc(f.endsAt)}">`);
+  endInput.oninput = (e) => { f.endsAt = e.target.value; };
+  card.appendChild(endInput);
+  card.appendChild(el(`<p class="mini-help" style="margin:-6px 0 12px;">Sert à calculer les heures d'entraînement suivies par chaque secouriste.</p>`));
+
+  const locInput = el(`<input type="text" list="session-lieux" placeholder="Lieu (ex. Local ASSDCA Dieppe)" style="${inputStyle}" value="${esc(f.location)}">`);
+  locInput.oninput = (e) => { f.location = e.target.value; };
+  card.appendChild(locInput);
+  card.appendChild(el(`<datalist id="session-lieux"><option value="Local ASSDCA Dieppe"></option><option value="Extérieur"></option><option value="Visioconférence"></option></datalist>`));
+
+  const animInput = el(`<input type="text" placeholder="Animateur" style="${inputStyle}" value="${esc(f.animator)}">`);
+  animInput.oninput = (e) => { f.animator = e.target.value; };
+  card.appendChild(animInput);
+
+  const equipInput = el(`<textarea placeholder="Matériel à prévoir (optionnel)" rows="2" style="${inputStyle}resize:vertical;">${esc(f.equipment)}</textarea>`);
+  equipInput.oninput = (e) => { f.equipment = e.target.value; };
+  card.appendChild(equipInput);
+
+  card.appendChild(el(`<label style="display:block;font-size:12.5px;font-weight:700;margin-bottom:6px;">Statut de la séance</label>`));
+  const statusRow = el(`<div class="choice-row" style="margin-bottom:12px;"></div>`);
+  Object.keys(SESSION_STATUS_LABELS).forEach(id => {
+    const chip = el(`<div class="chip ${f.status === id ? "selected" : ""}">${esc(SESSION_STATUS_LABELS[id])}</div>`);
+    chip.onclick = () => { f.status = id; render(); };
+    statusRow.appendChild(chip);
+  });
+  card.appendChild(statusRow);
+
+  if (f.editingId) {
+    const reportInput = el(`<textarea placeholder="Compte rendu de la séance (visible des formateurs uniquement)" rows="3" style="${inputStyle}resize:vertical;">${esc(f.report)}</textarea>`);
+    reportInput.oninput = (e) => { f.report = e.target.value; };
+    card.appendChild(reportInput);
+  }
+
   if (f.fonction === "PSE1" || f.fonction === "PSE2") {
     card.appendChild(el(`<div style="border-top:1px solid var(--border);margin:6px 0 14px;padding-top:14px;">
       <div style="font-weight:700;font-size:13.5px;margin-bottom:8px;">Quizz spécial de la séance (optionnel)</div>
@@ -6596,6 +6759,190 @@ function renderSessionForm() {
 
   return card;
 }
+
+
+/* ============================================================
+   MODULE ENTRAÎNEMENTS (11/10/2026)
+   Suivi des présences, des heures et de l'assiduité des secouristes.
+   S'appuie sur les fonctions Supabase app_formateur_training_stats et app_learner_my_trainings.
+   ============================================================ */
+const TSTATS_UI = { sort: "name" };
+
+async function goToTrainingStats() {
+  state.view = "trainingStats";
+  state.trainingStats = "loading";
+  render();
+  const [r, al] = await Promise.all([
+    rpc("app_formateur_training_stats", { p_token: state.auth.token }),
+    rpc("app_formateur_parcours_alerts", { p_token: state.auth.token })
+  ]);
+  state.trainingStats = (r && !r.error && Array.isArray(r.learners))
+    ? { data: r, alerts: (al && Array.isArray(al.steps)) ? al.steps : [] }
+    : { error: true };
+  render();
+}
+
+function pctText(x) { return x == null ? "–" : Math.round(Number(x) * 100) + "%"; }
+function hoursText(h) { return String(Math.round(Number(h || 0) * 10) / 10).replace(".", ",") + " h"; }
+function rateColor(x) {
+  if (x == null) return "var(--text-muted)";
+  x = Number(x);
+  return x >= 0.75 ? "var(--good)" : (x >= 0.5 ? "var(--amber)" : "var(--critical)");
+}
+function rateBar(x) {
+  const w = x == null ? 0 : Math.max(0, Math.min(100, Math.round(Number(x) * 100)));
+  return `<span style="display:inline-block;width:90px;height:8px;border-radius:999px;background:var(--gridline);overflow:hidden;vertical-align:middle;"><span style="display:block;height:100%;width:${w}%;background:${rateColor(x)};border-radius:999px;"></span></span>`;
+}
+
+function exportTrainingStatsCsv(d) {
+  const lines = [
+    ["Suivi des entraînements MyPSE", "Saison depuis le " + formatDateFR(d.season_start)],
+    ["Séances réalisées", d.sessions.realisee],
+    ["Séances prévues", d.sessions.prevue],
+    ["Heures dispensées", d.hours_delivered],
+    ["Assiduité moyenne %", d.avg_attendance_rate == null ? "" : Math.round(Number(d.avg_attendance_rate) * 100)],
+    [],
+    ["Nom", "Fonction", "Présent", "Absent", "Excusé", "Heures suivies", "Assiduité %"]
+  ].concat(d.learners.map(l => [l.full_name, l.niveau, l.present, l.absent, l.excuse, l.hours, l.rate == null ? "" : Math.round(Number(l.rate) * 100)]));
+  const csv = "﻿" + lines.map(l => l.map(c => '"' + String(c == null ? "" : c).replace(/"/g, '""') + '"').join(";")).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  a.download = "suivi-entrainements-" + localISO(new Date()) + ".csv";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+function renderTrainingStats() {
+  const container = el(`<div></div>`);
+  container.appendChild(el(`<div class="page-header">${iconChip("chart", {color: "teal"})}<div><div class="page-title">Suivi des entraînements</div><div class="page-sub">Présences, heures suivies et assiduité des secouristes sur la saison en cours.</div></div></div>`));
+
+  const ts = state.trainingStats;
+  if (ts === "loading" || !ts) {
+    container.appendChild(el(`<div class="card"><div class="empty-state">Chargement…</div></div>`));
+    return container;
+  }
+  if (ts.error) {
+    const c = el(`<div class="card"><div class="empty-state">Impossible de charger le suivi pour le moment.</div></div>`);
+    const retry = el(`<button class="btn block">Réessayer</button>`);
+    retry.onclick = goToTrainingStats;
+    c.appendChild(retry);
+    container.appendChild(c);
+    return container;
+  }
+
+  const d = ts.data;
+  container.appendChild(el(`<div class="card">
+    <h3 style="margin:0 0 4px 0;">Saison depuis le ${esc(formatDateFR(d.season_start))}</h3>
+    <div class="mini-help" style="margin-bottom:10px;">Seules les séances au statut « Réalisée » comptent dans les heures et l'assiduité.</div>
+    <div class="stat-grid">
+      <div class="stat-tile"><div class="val">${d.effectif}</div><div class="lbl">Secouristes actifs</div></div>
+      <div class="stat-tile"><div class="val">${d.sessions.realisee}</div><div class="lbl">Séances réalisées</div></div>
+      <div class="stat-tile"><div class="val">${d.sessions.prevue}</div><div class="lbl">Séances prévues</div></div>
+      <div class="stat-tile"><div class="val">${esc(hoursText(d.hours_delivered))}</div><div class="lbl">Heures dispensées</div></div>
+      <div class="stat-tile"><div class="val">${esc(pctText(d.avg_attendance_rate))}</div><div class="lbl">Assiduité moyenne</div></div>
+    </div>
+  </div>`));
+
+  if (Array.isArray(d.next_sessions) && d.next_sessions.length) {
+    const nx = el(`<div class="card" style="margin-top:16px;"><h3 style="margin:0 0 8px;">Prochaines séances</h3></div>`);
+    d.next_sessions.forEach((s, i) => {
+      const row = el(`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 0;${i > 0 ? "border-top:1px solid var(--border);" : ""}cursor:pointer;"><span style="flex:1;min-width:200px;font-size:13.5px;"><b>${esc(s.title)}</b><br><span style="font-size:12px;color:var(--text-muted);">${esc(formatSessionDate(s.starts_at))}</span></span><span class="tag tag-blue">${esc(fonctionLabel(s.fonction))}</span></div>`);
+      row.onclick = goToSessions;
+      nx.appendChild(row);
+    });
+    container.appendChild(nx);
+  }
+
+  const card = el(`<div class="card" style="margin-top:16px;"></div>`);
+  const head = el(`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;"><h3 style="margin:0;">Assiduité par secouriste</h3></div>`);
+  const exp = el(`<button class="btn secondary" style="font-size:12.5px;padding:6px 12px;">Exporter en CSV</button>`);
+  exp.onclick = () => exportTrainingStatsCsv(d);
+  head.appendChild(exp);
+  card.appendChild(head);
+
+  const sortRow = el(`<div class="choice-row" style="margin-bottom:10px;"></div>`);
+  [["name", "Trier par nom"], ["rate", "Assiduité (faible d'abord)"], ["hours", "Heures suivies"]].forEach(([id, label]) => {
+    const chip = el(`<div class="chip ${TSTATS_UI.sort === id ? "selected" : ""}">${esc(label)}</div>`);
+    chip.onclick = () => { TSTATS_UI.sort = id; render(); };
+    sortRow.appendChild(chip);
+  });
+  card.appendChild(sortRow);
+
+  if (!d.learners.length) {
+    card.appendChild(el(`<div class="empty-state">Aucun secouriste actif pour le moment.</div>`));
+  } else {
+    const rows = d.learners.slice();
+    if (TSTATS_UI.sort === "rate") rows.sort((a, b) => (a.rate == null ? 2 : Number(a.rate)) - (b.rate == null ? 2 : Number(b.rate)) || String(a.full_name).localeCompare(String(b.full_name), "fr"));
+    else if (TSTATS_UI.sort === "hours") rows.sort((a, b) => Number(b.hours) - Number(a.hours) || String(a.full_name).localeCompare(String(b.full_name), "fr"));
+    else rows.sort((a, b) => String(a.full_name).localeCompare(String(b.full_name), "fr"));
+    rows.forEach((l, i) => {
+      const row = el(`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:9px 0;${i > 0 ? "border-top:1px solid var(--border);" : ""}">
+        <span style="flex:1;min-width:170px;font-weight:700;font-size:13.5px;cursor:pointer;">${esc(l.full_name || "")}</span>
+        <span class="tag">${esc(l.niveau || "")}</span>
+        <span style="font-size:12.5px;color:var(--text-muted);min-width:150px;">P ${l.present} · A ${l.absent} · E ${l.excuse}</span>
+        <span style="font-size:12.5px;min-width:56px;">${esc(hoursText(l.hours))}</span>
+        <span style="display:flex;gap:8px;align-items:center;min-width:140px;">${rateBar(l.rate)}<b style="font-size:12.5px;color:${rateColor(l.rate)};">${esc(pctText(l.rate))}</b></span>
+      </div>`);
+      row.firstElementChild.onclick = () => goToPersonFile(l.id);
+      card.appendChild(row);
+    });
+    card.appendChild(el(`<div class="mini-help" style="margin-top:10px;">P = présent · A = absent · E = excusé. Un clic sur un nom ouvre la fiche individuelle.</div>`));
+  }
+  container.appendChild(card);
+
+  const alertsCard = renderRecycleAlertsCard(ts.alerts);
+  if (alertsCard) container.appendChild(alertsCard);
+  return container;
+}
+
+// Carte "Mes entraînements" de l'accueil secouriste : heures suivies, assiduité et dernières séances.
+async function loadMyTrainings(force) {
+  if (!state.auth || !state.auth.token || isFormateur()) return;
+  if (EXTRAS.mtFor === state.auth.token && !force) return;
+  EXTRAS.mtFor = state.auth.token;
+  if (!EXTRAS.mt) EXTRAS.mt = "loading";
+  const r = await rpc("app_learner_my_trainings", { p_token: state.auth.token });
+  EXTRAS.mt = (r && !r.error && typeof r.hours !== "undefined") ? r : { error: true };
+  if (state.view === "home") render();
+}
+
+function renderMyTrainingsCard() {
+  const wrap = el(`<div></div>`);
+  if (isFormateur()) return wrap;
+  loadMyTrainings();
+  const card = el(`<div class="card accent-teal" style="margin-bottom:16px;"></div>`);
+  const titleRow = el(`<div style="display:flex;align-items:center;gap:9px;margin-bottom:8px;"></div>`);
+  titleRow.appendChild(el(iconChip("calendar", { size: "sm", color: "teal" })));
+  titleRow.appendChild(el(`<h3 style="margin:0;">Mes entraînements</h3>`));
+  card.appendChild(titleRow);
+  const d = EXTRAS.mt;
+  if (!d || d === "loading") {
+    card.appendChild(el(`<div class="empty-state">Chargement…</div>`));
+  } else if (d.error) {
+    card.appendChild(el(`<div class="empty-state">Indisponible pour le moment.</div>`));
+  } else if (!(d.present + d.absent + d.excuse)) {
+    card.appendChild(el(`<div class="empty-state">Aucune séance enregistrée pour le moment.</div>`));
+    card.appendChild(el(`<div class="mini-help">Vos heures et votre assiduité apparaîtront après vos premiers entraînements.</div>`));
+  } else {
+    card.appendChild(el(`<div class="stat-grid">
+      <div class="stat-tile"><div class="val">${esc(hoursText(d.hours))}</div><div class="lbl">Heures suivies</div></div>
+      <div class="stat-tile"><div class="val">${d.present}</div><div class="lbl">Séances suivies</div></div>
+      <div class="stat-tile"><div class="val">${esc(pctText(d.rate))}</div><div class="lbl">Assiduité</div></div>
+    </div>`));
+    const labels = { present: "Présent", absent: "Absent", excuse: "Excusé" };
+    const styles = {
+      present: "background:var(--good-light);color:var(--good);",
+      absent: "background:var(--critical-light);color:var(--critical);",
+      excuse: "background:var(--warning-light);color:var(--amber-dark);"
+    };
+    (d.history || []).slice(0, 3).forEach((h, i) => {
+      card.appendChild(el(`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 0;${i === 0 ? "margin-top:10px;" : ""}border-top:1px solid var(--border);"><span style="flex:1;min-width:180px;font-size:13px;"><b>${esc(h.title)}</b><br><span style="font-size:12px;color:var(--text-muted);">${esc(formatSessionDate(h.starts_at))}</span></span><span class="tag" style="${styles[h.status] || ""}border-color:transparent;">${esc(labels[h.status] || h.status)}</span></div>`));
+    });
+    card.appendChild(el(`<div class="mini-help" style="margin-top:6px;">Saison depuis le ${esc(formatDateFR(d.season_start))}.</div>`));
+  }
+  wrap.appendChild(card);
+  return wrap;
+}
+
 
 initAuth();
 
