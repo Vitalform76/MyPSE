@@ -1163,7 +1163,7 @@ const state = {
   accounts: null,
   adminSettingsForm: { disclaimer_message: null, referentiel_banner: null, formateur_code: null, busy: {}, error: {} },
   sessions: null,
-  sessionForm: { open: false, editingId: null, title: "", startsAt: "", fonction: "PSE1", theme: "", description: "", quizThemes: "all", quizDifficulties: ["moyen"], quizMode: "entrainement", quizCount: 15, busy: false, error: null },
+  sessionForm: { open: false, editingId: null, title: "", startsAt: "", fonction: "PSE1", theme: "", description: "", quizEnabled: true, quizThemes: "all", quizDifficulties: ["moyen"], quizMode: "entrainement", quizCount: 15, busy: false, error: null },
   createProfileForm: { fullName: "", email: "", password: "", role: "secouriste", niveau: "PSE1", busy: false, error: null, successMsg: null },
   questionsAdmin: { loading: false, error: false, selectedTheme: null },
   themeForm: { open: false, editingId: null, id: "", label: "", level: "PSE1", busy: false, error: null },
@@ -2098,7 +2098,7 @@ async function goToSessions() {
 }
 
 function resetSessionForm() {
-  state.sessionForm = { open: false, editingId: null, title: "", startsAt: "", fonction: "PSE1", theme: "", description: "", quizThemes: "all", quizDifficulties: ["moyen"], quizMode: "entrainement", quizCount: 15, busy: false, error: null };
+  state.sessionForm = { open: false, editingId: null, title: "", startsAt: "", fonction: "PSE1", theme: "", description: "", quizEnabled: true, quizThemes: "all", quizDifficulties: ["moyen"], quizMode: "entrainement", quizCount: 15, busy: false, error: null };
 }
 
 // Ajouté le 20/08/2026 (soir) — point 15 de la liste du porteur de projet : ouvre le formulaire
@@ -2114,6 +2114,7 @@ function openEditSessionForm(session) {
     fonction: session.fonction,
     theme: session.theme || "",
     description: session.description || "",
+    quizEnabled: !!qc,
     quizThemes: qc && qc.themes ? qc.themes : "all",
     quizDifficulties: qc && qc.difficulties && qc.difficulties.length ? qc.difficulties : ["moyen"],
     quizMode: qc && qc.mode ? qc.mode : "entrainement",
@@ -2130,7 +2131,7 @@ async function submitSessionForm() {
   if (!f.startsAt) { f.error = "Merci d'indiquer une date."; render(); return; }
   const iso = new Date(f.startsAt).toISOString();
   let quizConfig = null;
-  if (f.fonction === "PSE1" || f.fonction === "PSE2") {
+  if ((f.fonction === "PSE1" || f.fonction === "PSE2") && f.quizEnabled) {
     quizConfig = { themes: f.theme ? [f.theme] : "all", difficulties: f.quizDifficulties, mode: f.quizMode, count: f.quizCount };
   }
   f.busy = true; render();
@@ -2788,6 +2789,58 @@ const HOME_LEVEL_META = {
 // priorité aux thématiques jamais travaillées (parmi les fonctions accessibles au compte), puis, si
 // tout a déjà été essayé au moins une fois, au thème le moins maîtrisé (taux de réussite le plus bas).
 // Reprend la même logique que le widget "Modules en cours" déjà en place.
+// Rappels personnalisés (accueil apprenant) : séances proches + thématiques à réviser (ancienneté ou score bas).
+// Calculés côté application ; une rappel masqué reste masqué jusqu'au lendemain (localStorage, par appareil).
+function readDismissedReminders() { try { return JSON.parse(localStorage.getItem("mypse_reminders_dismissed") || "{}"); } catch (e) { return {}; } }
+function dismissReminder(id) {
+  const d = readDismissedReminders(); d[id] = new Date().toISOString().slice(0, 10);
+  try { localStorage.setItem("mypse_reminders_dismissed", JSON.stringify(d)); } catch (e) {}
+  render();
+}
+function buildReminders() {
+  const out = [];
+  const today = new Date().toISOString().slice(0, 10);
+  const dismissed = readDismissedReminders();
+  const now = Date.now();
+  const sessions = Array.isArray(state.sessions) ? state.sessions : [];
+  sessions.forEach(s => {
+    const t = new Date(s.starts_at).getTime();
+    if (t >= now && t - now <= 7 * 86400000) {
+      const when = new Date(s.starts_at).toLocaleDateString("fr-FR", { weekday: "long", day: "2-digit", month: "2-digit" });
+      out.push({ id: "s-" + s.id, icon: "calendar", text: "Entraînement « " + s.title + " » — " + when, action: { label: "Voir le calendrier", fn: goToSessions } });
+    }
+  });
+  const levels = visibleFonctions().filter(id => HOME_LEVEL_ORDER.includes(id));
+  const byTheme = (state.myProgress && state.myProgress.by_theme) || [];
+  byTheme.forEach(st => {
+    const th = THEMES.find(t => t.id === st.theme);
+    if (!th || !levels.includes(th.level) || !st.total) return;
+    const days = st.last_at ? Math.floor((now - new Date(st.last_at).getTime()) / 86400000) : null;
+    const pct = Math.round(st.correct / st.total * 100);
+    if (days !== null && days >= 30) {
+      out.push({ id: "old-" + th.id, icon: "clock", text: "« " + th.label + " » : dernière révision il y a " + days + " jours", action: { label: "Réviser", fn: () => quickStartTheme(th.level, th.id) } });
+    } else if (st.total >= 5 && pct < 50) {
+      out.push({ id: "low-" + th.id, icon: "chart", text: "« " + th.label + " » : " + pct + " % de réussite, à consolider", action: { label: "Réviser", fn: () => quickStartTheme(th.level, th.id) } });
+    }
+  });
+  return out.filter(r => dismissed[r.id] !== today).slice(0, 5);
+}
+function renderHomeRemindersCard() {
+  const list = buildReminders();
+  if (!list.length) return null;
+  const card = el(`<div class="card accent" style="margin-bottom:20px;"><h3 style="margin:0 0 10px;">Rappels (${list.length})</h3></div>`);
+  list.forEach(r => {
+    const row = el(`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border);flex-wrap:wrap;"><span class="ic">${svgIcon(r.icon, 16)}</span><span style="flex:1;min-width:200px;font-size:13.5px;">${esc(r.text)}</span></div>`);
+    const go = el(`<button class="btn" style="font-size:12px;padding:6px 12px;">${esc(r.action.label)}</button>`);
+    go.onclick = r.action.fn;
+    const hide = el(`<button class="btn" style="font-size:12px;padding:6px 10px;background:var(--card);color:var(--text-muted);border:1px solid var(--border);">Masquer</button>`);
+    hide.onclick = () => dismissReminder(r.id);
+    row.appendChild(go); row.appendChild(hide);
+    card.appendChild(row);
+  });
+  return card;
+}
+
 function pickRecommendedTheme() {
   const levels = visibleFonctions().filter(id => HOME_LEVEL_ORDER.includes(id));
   const candidateThemes = THEMES.filter(t => levels.includes(t.level));
@@ -2802,9 +2855,16 @@ function pickRecommendedTheme() {
     return neverTried[Math.floor(Math.random() * neverTried.length)];
   }
 
+  // Priorité = score bas ET ancienneté de la dernière révision (plus c'est ancien, plus c'est prioritaire).
+  const now = Date.now();
   const ranked = candidateThemes
-    .map(t => Object.assign({}, t, { pct: statsByTheme[t.id].correct / statsByTheme[t.id].total }))
-    .sort((a, b) => a.pct - b.pct);
+    .map(t => {
+      const st = statsByTheme[t.id];
+      const days = st.last_at ? Math.max(0, (now - new Date(st.last_at).getTime()) / 86400000) : 0;
+      const pct = st.correct / st.total;
+      return Object.assign({}, t, { pct, priority: pct * 100 - Math.min(days, 60) * 0.5 });
+    })
+    .sort((a, b) => a.priority - b.priority);
   return ranked[0];
 }
 
@@ -2894,6 +2954,8 @@ function renderLearnerHomeContent() {
   topWidgetRow.appendChild(renderHomeCalendarWidget());
   topWidgetRow.appendChild(renderHomeInProgressWidget(levelsForTopWidgets));
   container.appendChild(topWidgetRow);
+  const remindersCard = renderHomeRemindersCard();
+  if (remindersCard) container.appendChild(remindersCard);
 
   const recommended = pickRecommendedTheme();
   if (recommended) {
@@ -3683,6 +3745,24 @@ function renderFormateur() {
     </div>
   </div>`));
 
+  // Thèmes à renforcer sur l'ensemble des secouristes (au moins 10 réponses cumulées).
+  (function () {
+    const agg = {};
+    list.forEach(x => (x.by_theme || []).forEach(t => {
+      if (!agg[t.theme]) agg[t.theme] = { total: 0, correct: 0, learners: 0 };
+      agg[t.theme].total += t.total; agg[t.theme].correct += t.correct; agg[t.theme].learners += 1;
+    }));
+    const weak = Object.keys(agg).filter(k => agg[k].total >= 10)
+      .map(k => ({ id: k, pct: Math.round(agg[k].correct / agg[k].total * 100), total: agg[k].total, learners: agg[k].learners }))
+      .sort((a, b) => a.pct - b.pct).slice(0, 5);
+    if (!weak.length) return;
+    const c = el(`<div class="card" style="margin-top:16px;"><h3 style="margin:0 0 10px;">Thèmes à renforcer (tous secouristes)</h3></div>`);
+    weak.forEach(w => {
+      c.appendChild(el(`<div class="theme-row"><span class="name">${esc(themeLabel(w.id))} <span style="font-size:11px;color:var(--text-muted);">· ${w.learners} secouriste${w.learners > 1 ? "s" : ""}, ${w.total} réponses</span></span><span class="bar-outer"><span class="bar-inner ${progressBarClass(w.pct)}" style="width:${w.pct}%"></span></span><span class="pct">${w.pct}%</span></div>`));
+    });
+    container.appendChild(c);
+  })();
+
   if (list.length === 0) {
     container.appendChild(el(`<div class="card"><div class="empty-state">Aucun secouriste n'a encore créé de compte. Partagez-leur le lien de l'application pour qu'ils s'inscrivent.</div></div>`));
     return container;
@@ -4261,6 +4341,19 @@ function renderLearnerParcours() {
   addBtn.onclick = () => openParcoursStepForm(t.targetId, null);
   listHeader.appendChild(addBtn);
   listCard.appendChild(listHeader);
+  const quick = el(`<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px;"><span style="font-size:12px;color:var(--text-muted);align-self:center;">Ajout rapide :</span></div>`);
+  [["PSE1 validé", "formation_initiale", "PSE1", "valide"], ["PSE2 validé", "formation_initiale", "PSE2", "valide"], ["Recyclage (FC) PSE1", "recyclage_fc", "PSE1", "a_venir"], ["Recyclage (FC) PSE2", "recyclage_fc", "PSE2", "a_venir"]].forEach(([label, type, niv, status]) => {
+    const b = el(`<button class="btn" style="font-size:12px;padding:5px 10px;background:var(--card);color:var(--text-primary);border:1px solid var(--border);">${esc(label)}</button>`);
+    b.onclick = () => {
+      openParcoursStepForm(t.targetId, null);
+      const ff = state.parcoursStepForm;
+      ff.label = label; ff.step_type = type; ff.niveau = niv; ff.status = status;
+      if (status === "valide") ff.validated_date = new Date().toISOString().slice(0, 10);
+      render();
+    };
+    quick.appendChild(b);
+  });
+  listCard.appendChild(quick);
 
   const f = state.parcoursStepForm;
   function renderStepForm() {
@@ -5755,8 +5848,15 @@ function renderSessionForm() {
   if (f.fonction === "PSE1" || f.fonction === "PSE2") {
     card.appendChild(el(`<div style="border-top:1px solid var(--border);margin:6px 0 14px;padding-top:14px;">
       <div style="font-weight:700;font-size:13.5px;margin-bottom:8px;">Quizz spécial de la séance (optionnel)</div>
-      <p class="help" style="margin:-2px 0 10px;">Si configuré, les secouristes concernés pourront lancer ce quizz en un clic depuis le calendrier. La thématique ci-dessus sera utilisée comme filtre.</p>
+      <p class="help" style="margin:-2px 0 10px;">Si activé, les secouristes concernés pourront lancer ce quizz en un clic depuis le calendrier. La thématique ci-dessus sera utilisée comme filtre.</p>
     </div>`));
+
+    const qToggle = el(`<label style="display:flex;align-items:center;gap:10px;margin:0 0 12px;font-weight:600;font-size:13.5px;cursor:pointer;"><input type="checkbox" ${f.quizEnabled ? "checked" : ""} style="width:18px;height:18px;"> Proposer un quizz spécial pour cet entraînement</label>`);
+    qToggle.querySelector("input").onchange = (e) => { f.quizEnabled = e.target.checked; render(); };
+    card.appendChild(qToggle);
+  }
+
+  if ((f.fonction === "PSE1" || f.fonction === "PSE2") && f.quizEnabled) {
 
     card.appendChild(el(`<label class="field-label">Difficulté</label>`));
     const diffRow = el(`<div class="choice-row" style="margin-bottom:10px;"></div>`);
