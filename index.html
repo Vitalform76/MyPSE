@@ -338,6 +338,7 @@
   .field { margin-bottom: 18px; }
   .field:last-child { margin-bottom: 0; }
   .field label.field-label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+  .help { font-size: 12.5px; color: var(--text-muted); line-height: 1.45; }
   .field p.help { font-size: 12px; color: var(--text-muted); margin: 4px 0 0; }
   .choice-row { display: flex; flex-wrap: wrap; gap: 8px; }
   .chip {
@@ -879,6 +880,25 @@
   .tk-bubble .who { font-size: 11.5px; font-weight: 700; color: var(--text-muted); margin-bottom: 3px; }
   .tk-bubble .txt { font-size: 13.5px; white-space: pre-wrap; line-height: 1.5; }
   .tk-shot { max-width: 100%; max-height: 420px; border-radius: 10px; border: 1px solid var(--border); margin-top: 10px; }
+
+  /* ---------- Phase 3 (fin) : documents, administration, questionnaires admin, fiche personne ---------- */
+  .doc-card { transition: box-shadow .12s ease; }
+  .doc-card:hover { box-shadow: var(--shadow-md); }
+  .doc-folder-head { display: flex; align-items: center; gap: 10px; margin: 26px 0 8px; }
+  .doc-folder-head h3 { margin: 0; font-size: 15px; }
+  .chip.is-empty { border-style: dashed; color: var(--critical); }
+  .qa-q { margin: 10px 0 0; background: var(--surface-1); }
+  .qa-q .qa-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+  .pill.diff-facile { background: rgba(46,160,90,.14); color: var(--good); }
+  .pill.diff-moyen { background: rgba(240,162,2,.16); color: #a86f00; }
+  .pill.diff-difficile { background: rgba(230,57,70,.12); color: var(--critical); }
+  .pf-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+  .pf-avatar { flex: none; width: 58px; height: 58px; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 800; color: #fff; background: linear-gradient(135deg, var(--blue), var(--blue-dark)); box-shadow: var(--shadow-sm); }
+  .pf-head .pf-name { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.2; }
+  .pf-head .pf-sub { font-size: 12.5px; color: var(--text-muted); margin-top: 3px; }
+  .pf-row { padding: 8px 0; border-top: 1px solid var(--border); font-size: 13.5px; }
+  .pf-row:first-of-type { border-top: none; }
+  @media (max-width: 520px) { .pf-head .pf-name { font-size: 18px; } .pf-avatar { width: 48px; height: 48px; font-size: 17px; } }
   .tk-input { width: 100%; padding: 10px 12px; font-size: 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-1); font-family: inherit; color: var(--text-primary); margin-bottom: 12px; }
 </style>
 <style>
@@ -3596,7 +3616,7 @@ async function goToPersonFile(id) {
   render();
 }
 function renderPersonFile() {
-  const container = el(`<div></div>`);
+  const container = el(`<div class="staff-wide"></div>`);
   const back = el(`<button class="btn secondary" style="margin-bottom:12px;">← Retour au suivi pédagogique</button>`);
   back.onclick = goToSuiviPedago;
   container.appendChild(back);
@@ -3606,37 +3626,51 @@ function renderPersonFile() {
   const row = p.data && sp && sp.secouristes ? computeSuiviRows(sp).find(r => r.id === p.id) : null;
   if (p.error || !row) { container.appendChild(el(`<div class="card"><div class="empty-state">Impossible de charger cette fiche.</div></div>`)); return container; }
   const d = p.data;
-  container.appendChild(el(`<div class="page-header">${iconChip("users", {color: "teal"})}<div><div class="page-title">${esc(row.full_name || row.email)}</div><div class="page-sub">${esc(row.email || "")} · ${esc(niveauShortLabel(row.niveau))}</div></div></div>`));
+  const displayName = row.full_name || row.email || "";
+  container.appendChild(el(`<div class="pf-head"><div class="pf-avatar">${esc(initialsOf(displayName))}</div><div><div class="pf-name">${esc(displayName)}</div><div class="pf-sub">${esc(row.email || "")} · <span class="tag tag-blue">${esc(niveauShortLabel(row.niveau))}</span></div></div></div>`));
   const bars = (v) => v == null ? "–" : v + " %";
-  container.appendChild(el(`<div class="card"><div class="stat-grid">
-    <div class="stat-tile"><div class="val">${row.total}</div><div class="lbl">Réponses</div></div>
-    <div class="stat-tile"><div class="val">${bars(row.pct)}</div><div class="lbl">Réussite</div></div>
-    <div class="stat-tile"><div class="val">${bars(row.fiPct)}</div><div class="lbl">Formation initiale</div></div>
-    <div class="stat-tile"><div class="val">${bars(row.fmaPct)}</div><div class="lbl">Recyclage (FMA)</div></div>
-  </div><div class="help" style="margin-top:8px;">Dernière activité : ${row.last_activity ? fmtDateFR(row.last_activity) : "aucune"} · ${(d.days || []).filter(x => x >= localISO(new Date(Date.now() - 29 * 86400000))).length} jour(s) actif(s) sur 30 jours · série en cours : ${computeStreak(d.days)}</div></div>`));
+  const pctCls = (v) => v == null ? "" : (v >= 80 ? "good" : (v < 50 ? "warn" : ""));
+  const activeDays = (d.days || []).filter(x => x >= localISO(new Date(Date.now() - 29 * 86400000))).length;
+  container.appendChild(el(`<div class="kpi-strip">
+    <div class="kpi indigo"><div class="kv">${row.total}</div><div class="kl">Réponses</div></div>
+    <div class="kpi ${pctCls(row.pct)}"><div class="kv">${bars(row.pct)}</div><div class="kl">Réussite</div></div>
+    <div class="kpi ${pctCls(row.fiPct)}"><div class="kv">${bars(row.fiPct)}</div><div class="kl">Formation initiale</div></div>
+    <div class="kpi ${pctCls(row.fmaPct)}"><div class="kv">${bars(row.fmaPct)}</div><div class="kl">Recyclage (FMA)</div></div>
+  </div>`));
+  container.appendChild(el(`<div class="help" style="margin-top:10px;">Dernière activité : ${row.last_activity ? fmtDateFR(row.last_activity) : "aucune"} · ${activeDays} jour(s) actif(s) sur 30 jours · série en cours : ${computeStreak(d.days)}</div>`));
   const acts = el(`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;"></div>`);
   const b1 = el(`<button class="btn">Formation initiale / FMA</button>`); b1.onclick = () => goToLearnerTraining(row.id);
   const b2 = el(`<button class="btn secondary">Parcours</button>`); b2.onclick = () => goToLearnerParcours(row.id);
   acts.appendChild(b1); acts.appendChild(b2); container.appendChild(acts);
-  if (row.flags.length) container.appendChild(el(`<div class="card accent" style="margin-top:16px;"><h3 style="margin:0 0 6px;">Points d'attention</h3><div style="font-size:13.5px;">${row.flags.map(f => esc(f.t)).join(" · ")}</div></div>`));
+  if (row.flags.length) container.appendChild(el(`<div class="card accent-coral" style="margin-top:16px;"><h3 style="margin:0 0 8px;">Points d'attention</h3><div class="tagset">${row.flags.map(f => `<span class="pill warn">${esc(f.t)}</span>`).join("")}</div></div>`));
+
+  const cols = el(`<div class="home-cols staff" style="margin-top:16px;"></div>`);
+  const left = el(`<div class="col"></div>`), right = el(`<div class="col"></div>`);
+
   // Thèmes
   const th = (d.by_theme || []).filter(t => t.total >= 3).map(t => ({ id: t.theme, pct: Math.round(t.correct / t.total * 100), total: t.total })).sort((a, b) => a.pct - b.pct);
-  const tc = el(`<div class="card" style="margin-top:16px;"><h3 style="margin:0 0 10px;">Thèmes (du plus faible au plus solide)</h3></div>`);
+  const tc = el(`<div class="card accent-indigo"><div class="mod-head"><h3>Thèmes</h3><span class="help">du plus faible au plus solide</span></div></div>`);
   if (!th.length) tc.appendChild(el(`<div class="help">Pas encore assez de réponses (3 minimum par thème).</div>`));
   th.forEach(w => tc.appendChild(el(`<div class="theme-row"><span class="name">${esc(themeLabel(w.id))} <span style="font-size:11px;color:var(--text-muted);">· ${w.total} réponses</span></span><span class="bar-outer"><span class="bar-inner ${progressBarClass(w.pct)}" style="width:${w.pct}%"></span></span><span class="pct">${w.pct}%</span></div>`)));
-  container.appendChild(tc);
-  // Parcours
-  const pc = el(`<div class="card" style="margin-top:16px;"><h3 style="margin:0 0 10px;">Parcours</h3></div>`);
-  if (!(d.steps || []).length) pc.appendChild(el(`<div class="help">Aucune étape de parcours renseignée.</div>`));
-  (d.steps || []).forEach(s => pc.appendChild(el(`<div style="padding:7px 0;border-top:1px solid var(--border);font-size:13.5px;"><b>${esc(s.label)}</b> · ${esc(STEP_TYPE_LABELS[s.step_type] || s.step_type)} · ${esc(s.niveau || "")} · ${esc(STEP_STATUS_LABELS[s.status] || s.status)}${s.status === "valide" ? " le " + fmtDateFR(s.validated_date) : (s.target_date ? " · échéance " + fmtDateFR(s.target_date) : "")}</div>`)));
-  const al = recycleAlertsFromSteps(d.steps);
-  al.forEach(a => pc.appendChild(el(`<div style="padding:6px 0;font-size:12.5px;color:${a.sev === 2 ? "var(--critical)" : "var(--text-muted)"};">⚠ ${esc(a.text)}</div>`)));
-  container.appendChild(pc);
+  left.appendChild(tc);
+
   // Présence
-  const ac = el(`<div class="card" style="margin-top:16px;"><h3 style="margin:0 0 10px;">Présence aux entraînements (${(d.attendance || []).length})</h3></div>`);
-  if (!(d.attendance || []).length) ac.appendChild(el(`<div class="help">Aucune présence enregistrée.</div>`));
-  (d.attendance || []).slice(0, 15).forEach(a => ac.appendChild(el(`<div style="padding:6px 0;border-top:1px solid var(--border);font-size:13.5px;">${fmtDateFR(a.starts_at)} — ${esc(a.title)} <span class="tag">${esc(a.fonction || "")}</span></div>`)));
-  container.appendChild(ac);
+  const att = d.attendance || [];
+  const ac = el(`<div class="card accent-teal"><div class="mod-head"><h3>Présence aux entraînements</h3><span class="pill">${att.length}</span></div></div>`);
+  if (!att.length) ac.appendChild(el(`<div class="help">Aucune présence enregistrée.</div>`));
+  att.slice(0, 15).forEach(a => ac.appendChild(el(`<div class="pf-row">${fmtDateFR(a.starts_at)} — ${esc(a.title)} <span class="tag">${esc(a.fonction || "")}</span></div>`)));
+  left.appendChild(ac);
+
+  // Parcours
+  const steps = d.steps || [];
+  const pc = el(`<div class="card accent-coral"><div class="mod-head"><h3>Parcours</h3><span class="pill">${steps.length}</span></div></div>`);
+  if (!steps.length) pc.appendChild(el(`<div class="help">Aucune étape de parcours renseignée.</div>`));
+  steps.forEach(s => pc.appendChild(el(`<div class="pf-row"><b>${esc(s.label)}</b> · ${esc(STEP_TYPE_LABELS[s.step_type] || s.step_type)} · ${esc(s.niveau || "")} · ${esc(STEP_STATUS_LABELS[s.status] || s.status)}${s.status === "valide" ? " le " + fmtDateFR(s.validated_date) : (s.target_date ? " · échéance " + fmtDateFR(s.target_date) : "")}</div>`)));
+  recycleAlertsFromSteps(d.steps).forEach(a => pc.appendChild(el(`<div style="padding:6px 0;font-size:12.5px;color:${a.sev === 2 ? "var(--critical)" : "var(--text-muted)"};">⚠ ${esc(a.text)}</div>`)));
+  right.appendChild(pc);
+
+  cols.appendChild(left); cols.appendChild(right);
+  container.appendChild(cols);
   return container;
 }
 
@@ -6192,6 +6226,18 @@ function renderDocuments() {
   }
 
   const docsList = Array.isArray(state.documents) ? state.documents : [];
+  if (Array.isArray(state.documents)) {
+    const vis = visibleFonctions();
+    const acc = docsList.filter(d => vis.includes(d.fonction) || (d.extra_fonctions || []).some(f => vis.includes(f)));
+    const nFiles = acc.filter(d => d.kind === "file").length;
+    const nCur = docsList.filter(d => d.fonction === state.docFilter.fonction || (d.extra_fonctions || []).includes(state.docFilter.fonction)).length;
+    container.appendChild(el(`<div class="kpi-strip" style="margin-bottom:16px;">
+      <div class="kpi indigo"><div class="kv">${acc.length}</div><div class="kl">Documents accessibles</div></div>
+      <div class="kpi teal"><div class="kv">${nFiles}</div><div class="kl">Fichiers</div></div>
+      <div class="kpi"><div class="kv">${acc.length - nFiles}</div><div class="kl">Liens externes</div></div>
+      <div class="kpi good"><div class="kv">${nCur}</div><div class="kl">Dans « ${esc(niveauShortLabel(state.docFilter.fonction))} »</div></div>
+    </div>`));
+  }
   const tabsRow = el(`<div class="choice-row" style="margin-bottom:14px;"></div>`);
   visibleFonctions().forEach(fid => {
     const n = docsList.filter(d => d.fonction === fid || (d.extra_fonctions || []).includes(fid)).length;
@@ -6270,7 +6316,7 @@ function renderDocuments() {
     });
     folderKeys.forEach(key => {
       const label = key === "__none" ? "Sans dossier" : folderLabel(key);
-      container.appendChild(el(`<div class="page-header" style="margin:24px 0 4px;">${iconChip("folder", { size: "sm", color: "amber" })}<div><h3 style="margin:0;">${esc(label)} <span class="mini-help">· ${byFolder[key].length} document${byFolder[key].length > 1 ? "s" : ""}</span></h3></div></div>`));
+      container.appendChild(el(`<div class="doc-folder-head">${iconChip("folder", { size: "sm", color: "amber" })}<h3>${esc(label)}</h3><span class="pill">${byFolder[key].length} document${byFolder[key].length > 1 ? "s" : ""}</span></div>`));
       renderThemeGroups(byFolder[key], container);
     });
   }
@@ -6292,7 +6338,7 @@ function docPreviewKind(mimeType) {
 function renderDocCard(doc) {
   const previewKind = doc.kind === "file" ? docPreviewKind(doc.mime_type) : null;
   const extraFonctions = doc.extra_fonctions || [];
-  const card = el(`<div class="card" style="padding:14px 16px;margin-bottom:10px;"></div>`);
+  const card = el(`<div class="card doc-card" style="padding:14px 16px;margin-bottom:10px;"></div>`);
   const row = el(`<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;"></div>`);
   row.appendChild(el(`<div class="ft-badge ${docIcon(doc).toLowerCase()}">${docIcon(doc)}</div>`));
   const infoCol = el(`<div style="flex:1;min-width:180px;">
@@ -6307,7 +6353,7 @@ function renderDocCard(doc) {
   }
   row.appendChild(infoCol);
 
-  const actions = el(`<div style="flex:none;display:flex;gap:8px;flex-wrap:wrap;"></div>`);
+  const actions = el(`<div style="display:flex;gap:8px;flex-wrap:wrap;max-width:100%;"></div>`);
   if (previewKind) {
     const previewBtn = el(`<button class="btn secondary">Aperçu</button>`);
     previewBtn.onclick = () => openDocPreview(doc, previewKind);
@@ -6790,7 +6836,7 @@ function renderAccountsCard() {
 }
 
 function renderAdmin() {
-  const container = el(`<div></div>`);
+  const container = el(`<div class="staff-wide"></div>`);
   container.appendChild(el(`<div class="page-header">${iconChip("gear", {color: "coral"})}<div><div class="page-title">Administration</div><div class="page-sub">Réglages de l'application et gestion des comptes.</div></div></div>`));
 
   if (state.accounts === "loading") {
@@ -6808,14 +6854,35 @@ function renderAdmin() {
 
   const accs = Array.isArray(state.accounts) ? state.accounts : [];
   const nb = (f) => accs.filter(f).length;
-  container.appendChild(el(`<div class="stat-grid" style="margin-bottom:16px;">
-    <div class="stat-tile"><div class="val">${accs.length}</div><div class="lbl">Comptes</div></div>
-    <div class="stat-tile"><div class="val">${nb(a => a.role === "secouriste")}</div><div class="lbl">Secouristes</div></div>
-    <div class="stat-tile"><div class="val">${nb(a => a.role === "formateur" || a.role === "administrateur")}</div><div class="lbl">Équipe (formateurs, admin)</div></div>
-    <div class="stat-tile"><div class="val">${nb(a => a.disabled)}</div><div class="lbl">Désactivés</div></div>
+  container.appendChild(el(`<div class="kpi-strip" style="margin-bottom:16px;">
+    <div class="kpi teal"><div class="kv">${accs.length}</div><div class="kl">Comptes</div></div>
+    <div class="kpi indigo"><div class="kv">${nb(a => a.role === "secouriste")}</div><div class="kl">Secouristes</div></div>
+    <div class="kpi"><div class="kv">${nb(a => a.role === "formateur" || a.role === "administrateur")}</div><div class="kl">Équipe (formateurs, admin)</div></div>
+    <div class="kpi ${nb(a => a.disabled) ? "warn" : "good"}"><div class="kv">${nb(a => a.disabled)}</div><div class="kl">Désactivés</div></div>
   </div>`));
-  container.appendChild(renderSettingsCard());
-  container.appendChild(renderAccountsCard());
+
+  // Raccourcis vers les autres pages d'administration
+  const shortcuts = [
+    { icon: "users", color: "critical", title: "Créer un profil", sub: "Ajouter un compte sans inscription", fn: goToCreateProfile },
+    { icon: "palette", color: "indigo", title: "Personnalisation", sub: "Thème, fond et notifications de l'organisation", fn: goToPersonalisation },
+    { icon: "help", color: "coral", title: "Support", sub: "Tickets de l'organisation", fn: () => goToTickets() }
+  ];
+  const grid = el(`<div class="tool-grid" style="margin-bottom:6px;"></div>`);
+  shortcuts.forEach(s => {
+    const c = el(`<button type="button" class="tool-card">${iconChip(s.icon, { color: s.color })}<span><div class="tt">${esc(s.title)}</div><div class="ts">${esc(s.sub)}</div></span></button>`);
+    c.onclick = s.fn;
+    grid.appendChild(c);
+  });
+  container.appendChild(grid);
+
+  // Onglets : Comptes / Réglages généraux
+  const tab = state.adminTab || "comptes";
+  const tabs = el(`<div class="tabs" style="margin-top:18px;"><button class="${tab === "comptes" ? "active" : ""}">Comptes<span class="cnt">${accs.length}</span></button><button class="${tab === "reglages" ? "active" : ""}">Réglages généraux</button></div>`);
+  const [tbC, tbR] = tabs.querySelectorAll("button");
+  tbC.onclick = () => { state.adminTab = "comptes"; render(); };
+  tbR.onclick = () => { state.adminTab = "reglages"; render(); };
+  container.appendChild(tabs);
+  container.appendChild(tab === "reglages" ? renderSettingsCard() : renderAccountsCard());
   return container;
 }
 
@@ -6823,7 +6890,7 @@ function renderAdmin() {
    QUESTIONNAIRES — rendu (thèmes + questions, formateur + administrateur)
    ============================================================ */
 function renderQuestionsAdmin() {
-  const container = el(`<div></div>`);
+  const container = el(`<div class="staff-wide"></div>`);
   container.appendChild(el(`<div class="page-header">${iconChip("help", {color: "indigo"})}<div><div class="page-title">Questionnaires</div><div class="page-sub">Créez, modifiez et organisez les thèmes et les questions de la bibliothèque de révision.</div></div></div>`));
 
   if (state.questionsAdmin.loading) {
@@ -6839,6 +6906,19 @@ function renderQuestionsAdmin() {
     return container;
   }
 
+  // Filtres de la page (niveau + recherche), conservés dans state.questionsAdmin
+  const qa = state.questionsAdmin;
+  if (!qa.level) qa.level = "all";
+  if (qa.q == null) qa.q = "";
+  const countOf = (tid) => QUESTIONS.filter(q => q.theme === tid).length;
+  const emptyThemes = THEMES.filter(t => countOf(t.id) === 0);
+  container.appendChild(el(`<div class="kpi-strip" style="margin-bottom:16px;">
+    <div class="kpi indigo"><div class="kv">${THEMES.length}</div><div class="kl">Thèmes</div></div>
+    <div class="kpi teal"><div class="kv">${QUESTIONS.length}</div><div class="kl">Questions</div></div>
+    <div class="kpi ${emptyThemes.length ? "warn" : "good"}"><div class="kv">${emptyThemes.length}</div><div class="kl">Thème${emptyThemes.length > 1 ? "s" : ""} sans question</div></div>
+    <div class="kpi"><div class="kv">${["PSC", "PSE1", "PSE2"].map(l => THEMES.filter(t => t.level === l).reduce((n, t) => n + countOf(t.id), 0)).join(" · ")}</div><div class="kl">Questions PSC · PSE1 · PSE2</div></div>
+  </div>`));
+
   container.appendChild(renderProposalsCard());
   const themesCard = el(`<div class="card" style="margin-bottom:16px;"></div>`);
   const themesHeader = el(`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px;"></div>`);
@@ -6850,17 +6930,29 @@ function renderQuestionsAdmin() {
 
   if (state.themeForm.open) themesCard.appendChild(renderThemeForm());
 
+  // Filtre par niveau
+  const levelRow = el(`<div class="choice-row" style="margin-top:10px;"></div>`);
+  [["all", "Tous les niveaux"], ["PSC", niveauShortLabel("PSC")], ["PSE1", niveauShortLabel("PSE1")], ["PSE2", niveauShortLabel("PSE2")]].forEach(([id, label]) => {
+    const c = el(`<div class="chip ${qa.level === id ? "selected" : ""}">${esc(label)}</div>`);
+    c.onclick = () => { qa.limit = 40; qa.level = id; if (qa.selectedTheme) { const th = THEMES.find(t => t.id === qa.selectedTheme); if (th && id !== "all" && th.level !== id) qa.selectedTheme = null; } render(); };
+    levelRow.appendChild(c);
+  });
+  themesCard.appendChild(levelRow);
+
   const themeRow = el(`<div class="choice-row" style="margin-top:10px;"></div>`);
-  const allChip = el(`<div class="chip ${!state.questionsAdmin.selectedTheme ? "selected" : ""}">Tous les thèmes (${QUESTIONS.length})</div>`);
-  allChip.onclick = () => { state.questionsAdmin.selectedTheme = null; render(); };
+  const themesShown = THEMES.filter(t => qa.level === "all" || t.level === qa.level);
+  const totalShown = themesShown.reduce((n, t) => n + countOf(t.id), 0);
+  const allChip = el(`<div class="chip ${!state.questionsAdmin.selectedTheme ? "selected" : ""}">Tous les thèmes (${totalShown})</div>`);
+  allChip.onclick = () => { qa.limit = 40; state.questionsAdmin.selectedTheme = null; render(); };
   themeRow.appendChild(allChip);
-  THEMES.forEach(t => {
-    const count = QUESTIONS.filter(q => q.theme === t.id).length;
-    const chip = el(`<div class="chip ${state.questionsAdmin.selectedTheme === t.id ? "selected" : ""}">${esc(t.label)} · ${esc(niveauShortLabel(t.level))} (${count})</div>`);
-    chip.onclick = () => { state.questionsAdmin.selectedTheme = t.id; render(); };
+  themesShown.forEach(t => {
+    const count = countOf(t.id);
+    const chip = el(`<div class="chip ${state.questionsAdmin.selectedTheme === t.id ? "selected" : ""} ${count === 0 ? "is-empty" : ""}">${esc(t.label)} · ${esc(niveauShortLabel(t.level))} (${count})</div>`);
+    chip.onclick = () => { qa.limit = 40; state.questionsAdmin.selectedTheme = t.id; render(); };
     themeRow.appendChild(chip);
   });
   themesCard.appendChild(themeRow);
+  if (emptyThemes.length) themesCard.appendChild(el(`<p class="help" style="margin-top:10px;">Les thèmes en pointillés rouges ne contiennent encore aucune question.</p>`));
 
   if (state.questionsAdmin.selectedTheme) {
     const theme = THEMES.find(t => t.id === state.questionsAdmin.selectedTheme);
@@ -6889,20 +6981,30 @@ function renderQuestionsAdmin() {
 
   if (state.questionForm.open) questionsCard.appendChild(renderQuestionForm());
 
-  const visibleQuestions = state.questionsAdmin.selectedTheme
-    ? QUESTIONS.filter(q => q.theme === state.questionsAdmin.selectedTheme)
-    : QUESTIONS;
+  const searchWrap = el(`<div style="margin:6px 0 4px;"></div>`);
+  searchWrap.appendChild(makeSearchInput("qaSearch", qa.q, "Rechercher dans les questions…", v => { qa.q = v; }));
+  questionsCard.appendChild(searchWrap);
+
+  const qNeedle = (qa.q || "").trim().toLowerCase();
+  const visibleQuestions = QUESTIONS.filter(q => {
+    if (qa.selectedTheme) { if (q.theme !== qa.selectedTheme) return false; }
+    else if (qa.level !== "all" && themeLevel(q.theme) !== qa.level) return false;
+    if (qNeedle && !String((q.type === "order" ? q.scenario : q.q) || "").toLowerCase().includes(qNeedle)) return false;
+    return true;
+  });
+  questionsCard.appendChild(el(`<p class="help" style="margin:2px 0 0;">${visibleQuestions.length} question${visibleQuestions.length > 1 ? "s" : ""} affichée${visibleQuestions.length > 1 ? "s" : ""}.</p>`));
 
   if (!visibleQuestions.length) {
-    questionsCard.appendChild(el(`<div class="empty-state" style="margin-top:10px;">Aucune question${state.questionsAdmin.selectedTheme ? " dans ce thème" : ""} pour le moment.</div>`));
+    questionsCard.appendChild(el(`<div class="empty-state" style="margin-top:10px;">Aucune question${qNeedle ? " ne correspond à la recherche" : (state.questionsAdmin.selectedTheme ? " dans ce thème" : "")} pour le moment.</div>`));
   } else {
     const TYPE_LABELS = { qcm: "QCM", vf: "Vrai/Faux", short: "Réponse courte", order: "Mise en situation" };
-    visibleQuestions.forEach(q => {
+    if (!qa.limit) qa.limit = 40;
+    visibleQuestions.slice(0, qa.limit).forEach(q => {
       const summary = q.type === "order" ? q.scenario : q.q;
-      const row = el(`<div class="card" style="margin:10px 0 0;background:var(--surface-1);">
+      const row = el(`<div class="card qa-q">
         <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start;">
-          <div>
-            <div style="font-size:12px;color:var(--text-muted);margin-bottom:2px;">${esc(themeLabel(q.theme))} · ${esc(TYPE_LABELS[q.type] || q.type)} · ${esc(q.difficulty)}</div>
+          <div style="flex:1;min-width:200px;">
+            <div class="qa-meta"><span>${esc(themeLabel(q.theme))}</span><span class="pill">${esc(TYPE_LABELS[q.type] || q.type)}</span><span class="pill diff-${esc(q.difficulty)}">${esc(q.difficulty)}</span></div>
             <div style="font-weight:600;font-size:14px;">${esc(summary)}</div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;" id="qActions-${q.id}"></div>
@@ -6917,6 +7019,11 @@ function renderQuestionsAdmin() {
       actions.appendChild(delBtn);
       questionsCard.appendChild(row);
     });
+    if (visibleQuestions.length > qa.limit) {
+      const more = el(`<button class="btn secondary block" style="margin-top:12px;">Afficher 40 questions de plus (${visibleQuestions.length - qa.limit} restantes)</button>`);
+      more.onclick = () => { qa.limit += 40; render(); };
+      questionsCard.appendChild(more);
+    }
   }
 
   container.appendChild(questionsCard);
