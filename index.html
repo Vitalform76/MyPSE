@@ -398,6 +398,15 @@
   .timer.low { color: var(--critical); }
   .qtext { font-size: 16px; font-weight: 600; line-height: 1.45; margin: 0 0 16px; }
   .scenario-box { background: var(--blue-light); border-radius: 10px; padding: 12px 14px; font-size: 14px; line-height: 1.5; margin-bottom: 16px; color: #0d2c52; }
+  .q-media-wrap { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 16px; }
+  .q-media { margin: 0; flex: 1 1 280px; max-width: 100%; }
+  .q-media img { display: block; width: 100%; max-height: 340px; object-fit: contain; background: var(--surface-1); border-radius: 10px; border: 1px solid var(--border); cursor: zoom-in; }
+  .q-media .q-video-frame { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); background: #000; }
+  .q-media .q-video-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  .q-media figcaption { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.4; }
+  .q-lightbox { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.85); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; cursor: zoom-out; }
+  .q-lightbox img { max-width: 100%; max-height: 84vh; object-fit: contain; border-radius: 8px; }
+  .q-lightbox .q-lb-cap { color: #fff; font-size: 13px; margin-top: 10px; text-align: center; max-width: 90vw; }
   ul.options { list-style: none; margin: 0 0 16px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   ul.options li { border: 1.5px solid var(--border); border-radius: 10px; padding: 12px 14px; font-size: 14px; cursor: pointer; line-height: 1.4; display: flex; align-items: flex-start; gap: 10px; }
   ul.options li .box { flex: none; width: 18px; height: 18px; border-radius: 5px; border: 1.5px solid var(--text-muted); margin-top: 1px; }
@@ -1454,6 +1463,30 @@ async function profileFn(action, params) {
   return data;
 }
 
+// Appel de l'edge function "media-api" (photos des questions, lot 1 du 24/11/2026). Réservée au staff.
+async function mediaFn(action, params) {
+  let res;
+  try {
+    res = await fetch(SUPABASE_URL + "/functions/v1/media-api", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + SUPABASE_ANON_KEY
+      },
+      body: JSON.stringify(Object.assign({ action: action, token: state.auth.token }, params || {}))
+    });
+  } catch (e) {
+    return { error: "network", message: "Impossible de contacter le serveur." };
+  }
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  if (!res.ok && !data.error) {
+    return { error: "server", message: "Erreur serveur (" + res.status + ")." };
+  }
+  return data;
+}
+
 /* ============================================================
    ÉTAT DE L'APPLICATION
    ============================================================ */
@@ -2382,9 +2415,15 @@ function openQuestionForm(themeId, question) {
   } else {
     state.questionForm = { open: true, editingId: null, themeId: themeId || (THEMES[0] ? THEMES[0].id : ""), difficulty: "moyen", type: "qcm", q: "", scenario: "", choices: ["", ""], correct: [], actions: ["", ""], answers: [""], explanation: "", busy: false, error: null };
   }
+  questionFormInitMedia(question);
   render();
 }
-function closeQuestionForm() { state.questionForm.open = false; render(); }
+function closeQuestionForm() {
+  // Photos envoyées pendant cette session mais jamais enregistrées : on les supprime.
+  questionFormCleanupMediaFiles(state.questionForm.mediaUploaded);
+  state.questionForm.open = false;
+  render();
+}
 
 function questionFormAddChoice() { state.questionForm.choices.push(""); render(); }
 function questionFormRemoveChoice(i) {
@@ -2424,6 +2463,14 @@ async function submitQuestionForm() {
     payload.q = f.q.trim(); payload.answers = answers;
   }
 
+  payload.media = (f.media || []).map(m => {
+    const o = { kind: m.kind, url: m.url, credit: m.credit };
+    if (m.alt) o.alt = m.alt;
+    if (m.caption) o.caption = m.caption;
+    if (m.path) o.path = m.path;
+    return o;
+  });
+
   f.busy = true; render();
   let r;
   if (f.editingId) {
@@ -2433,11 +2480,14 @@ async function submitQuestionForm() {
   }
   f.busy = false;
   if (!r || r.error) {
-    const messages = { invalid_shape: "Le contenu de la question est incomplet pour ce type.", invalid_theme: "Thème invalide.", forbidden: "Action réservée au personnel encadrant." };
+    const messages = { invalid_shape: "Le contenu de la question est incomplet pour ce type.", invalid_theme: "Thème invalide.", invalid_media: "Média invalide : crédit obligatoire, texte alternatif obligatoire pour les photos, 4 médias maximum.", forbidden: "Action réservée au personnel encadrant." };
     f.error = (r && messages[r.error]) || "Impossible d'enregistrer cette question.";
     render();
     return;
   }
+  // Nettoyage du stockage : fichiers retirés de la question, ou envoyés puis abandonnés.
+  const keptPaths = (f.media || []).map(m => m.path).filter(Boolean);
+  questionFormCleanupMediaFiles((f.mediaInitialPaths || []).concat(f.mediaUploaded || []).filter(p => keptPaths.indexOf(p) === -1));
   state.questionForm.open = false;
   goToQuestionsAdmin();
 }
@@ -4711,6 +4761,9 @@ function renderQuiz() {
 
   card.appendChild(el(`<div class="progressbar-outer"><div class="progressbar-inner" style="width:${(quiz.index / quiz.questions.length * 100)}%"></div></div>`));
 
+  const qMediaEl = renderQuestionMedia(q.media);
+  if (qMediaEl) card.appendChild(qMediaEl);
+
   if (q.type === "order") {
     card.appendChild(el(`<div class="scenario-box"><strong>Situation :</strong> ${q.scenario}</div>`));
     card.appendChild(el(`<p class="qtext" style="font-size:14px;font-weight:600;color:var(--text-secondary);">Remettez les actions dans le bon ordre (utilisez les flèches) :</p>`));
@@ -6674,6 +6727,254 @@ function uploadFileToSignedUrl(uploadUrl, file, onProgress) {
   });
 }
 
+/* ============================================================
+   MÉDIAS DES QUESTIONS (lot 1 — 24/11/2026)
+   Une question peut porter jusqu'à 4 médias : photos (espace "question-media") ou vidéos YouTube / Vimeo
+   (intégration sans cookies). Chaque média a un crédit obligatoire ; les photos ont un texte alternatif.
+   ============================================================ */
+const QMEDIA_IMG_PREFIX = SUPABASE_URL + "/storage/v1/object/public/question-media/";
+const QMEDIA_MAX_ITEMS = 4;
+const QMEDIA_MAX_BYTES = 3145728;
+
+// Double contrôle côté client (le serveur valide aussi) : seules les adresses attendues sont affichées.
+function isSafeQuestionMediaUrl(m) {
+  if (!m || typeof m.url !== "string") return false;
+  if (m.kind === "image") return m.url.indexOf(QMEDIA_IMG_PREFIX) === 0;
+  if (m.kind === "video") return /^https:\/\/(www\.youtube-nocookie\.com\/embed\/[A-Za-z0-9_-]{6,20}|player\.vimeo\.com\/video\/[0-9]{5,12})(\?[A-Za-z0-9=&_%.-]*)?$/.test(m.url);
+  return false;
+}
+
+// Transforme un lien YouTube / Vimeo collé par le formateur en adresse d'intégration sans cookies.
+function parseQuestionVideoUrl(raw) {
+  const s = String(raw || "").trim();
+  let m = s.match(/^https?:\/\/(?:www\.|m\.)?youtube\.com\/watch\?(?:[^#]*&)?v=([A-Za-z0-9_-]{6,20})/);
+  if (!m) m = s.match(/^https?:\/\/youtu\.be\/([A-Za-z0-9_-]{6,20})/);
+  if (!m) m = s.match(/^https?:\/\/(?:www\.)?youtube(?:-nocookie)?\.com\/embed\/([A-Za-z0-9_-]{6,20})/);
+  if (m) return "https://www.youtube-nocookie.com/embed/" + m[1];
+  m = s.match(/^https?:\/\/(?:www\.)?vimeo\.com\/(?:video\/)?([0-9]{5,12})/);
+  if (!m) m = s.match(/^https?:\/\/player\.vimeo\.com\/video\/([0-9]{5,12})/);
+  if (m) return "https://player.vimeo.com/video/" + m[1];
+  return null;
+}
+
+function openQuestionMediaLightbox(m) {
+  const box = document.createElement("div");
+  box.className = "q-lightbox";
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-modal", "true");
+  box.setAttribute("aria-label", "Agrandissement de l'image");
+  const img = document.createElement("img");
+  img.src = m.url;
+  img.alt = m.alt || "";
+  box.appendChild(img);
+  const capText = [m.caption, m.credit ? "Crédit : " + m.credit : ""].filter(Boolean).join(" — ");
+  if (capText) {
+    const cap = document.createElement("div");
+    cap.className = "q-lb-cap";
+    cap.textContent = capText;
+    box.appendChild(cap);
+  }
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  const close = () => {
+    document.removeEventListener("keydown", onKey);
+    if (box.parentNode) box.parentNode.removeChild(box);
+  };
+  box.onclick = close;
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(box);
+}
+
+// Construit le bloc médias d'une question (null s'il n'y a rien d'affichable).
+function renderQuestionMedia(media) {
+  const wrap = document.createElement("div");
+  wrap.className = "q-media-wrap";
+  (Array.isArray(media) ? media : []).forEach((m) => {
+    if (!isSafeQuestionMediaUrl(m)) return;
+    const fig = document.createElement("figure");
+    fig.className = "q-media";
+    if (m.kind === "image") {
+      const img = document.createElement("img");
+      img.src = m.url;
+      img.alt = m.alt || "";
+      img.loading = "lazy";
+      img.title = "Cliquer pour agrandir";
+      img.onclick = () => openQuestionMediaLightbox(m);
+      fig.appendChild(img);
+    } else {
+      const frameWrap = document.createElement("div");
+      frameWrap.className = "q-video-frame";
+      const iframe = document.createElement("iframe");
+      iframe.src = m.url;
+      iframe.title = m.caption || m.alt || "Vidéo de la question";
+      iframe.loading = "lazy";
+      iframe.setAttribute("allow", "accelerometer; encrypted-media; gyroscope; picture-in-picture; fullscreen");
+      iframe.setAttribute("allowfullscreen", "");
+      iframe.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
+      frameWrap.appendChild(iframe);
+      fig.appendChild(frameWrap);
+    }
+    const capText = [m.caption, m.credit ? "Crédit : " + m.credit : ""].filter(Boolean).join(" — ");
+    if (capText) {
+      const cap = document.createElement("figcaption");
+      cap.textContent = capText;
+      fig.appendChild(cap);
+    }
+    wrap.appendChild(fig);
+  });
+  return wrap.childNodes.length ? wrap : null;
+}
+
+// Redimensionne (1600 px max) et convertit en WebP (JPEG en secours) avant envoi pour rester léger.
+async function compressQuestionImage(file) {
+  if (!window.createImageBitmap) throw new Error("unsupported");
+  const bitmap = await createImageBitmap(file);
+  const maxSide = 1600;
+  const ratio = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * ratio));
+  const h = Math.max(1, Math.round(bitmap.height * ratio));
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+  if (bitmap.close) bitmap.close();
+  const toBlob = (type, quality) => new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+  let blob = await toBlob("image/webp", 0.85);
+  let ext = "webp", mime = "image/webp";
+  if (!blob || blob.type !== "image/webp") { blob = await toBlob("image/jpeg", 0.85); ext = "jpg"; mime = "image/jpeg"; }
+  if (!blob) throw new Error("compress_failed");
+  const base = String(file.name || "photo").replace(/\.[^.]+$/, "");
+  return new File([blob], base + "." + ext, { type: mime });
+}
+
+function questionFormMediaDraftReset(f) {
+  f.mediaDraft = { kind: "image", file: null, fileName: "", url: "", alt: "", caption: "", credit: "" };
+}
+
+// Initialise les champs médias du formulaire (nouvelle question ou modification).
+function questionFormInitMedia(question) {
+  const f = state.questionForm;
+  f.media = question && Array.isArray(question.media) ? JSON.parse(JSON.stringify(question.media)) : [];
+  f.mediaInitialPaths = f.media.map(m => m.path).filter(Boolean);
+  f.mediaUploaded = [];
+  f.mediaBusy = false;
+  f.mediaError = null;
+  questionFormMediaDraftReset(f);
+}
+
+function questionFormCleanupMediaFiles(paths) {
+  (paths || []).forEach((p) => { if (p) mediaFn("delete_question_media_path", { path: p }); });
+}
+
+function questionFormRemoveMedia(i) { state.questionForm.media.splice(i, 1); render(); }
+
+async function questionFormAddMedia() {
+  const f = state.questionForm;
+  const d = f.mediaDraft;
+  f.mediaError = null;
+  if (f.media.length >= QMEDIA_MAX_ITEMS) { f.mediaError = "4 médias maximum par question."; render(); return; }
+  if (!d.credit.trim()) { f.mediaError = "Le crédit est obligatoire (auteur, source ou accord de l'ASSDCA)."; render(); return; }
+  let item;
+  if (d.kind === "image") {
+    if (!d.file) { f.mediaError = "Choisissez une photo (JPEG, PNG ou WEBP)."; render(); return; }
+    if (!d.alt.trim()) { f.mediaError = "Le texte alternatif est obligatoire : décrivez la photo en une phrase."; render(); return; }
+    f.mediaBusy = true; render();
+    let file;
+    try {
+      file = await compressQuestionImage(d.file);
+    } catch (e) {
+      f.mediaBusy = false; f.mediaError = "Impossible de préparer cette image. Essayez une autre photo."; render(); return;
+    }
+    if (file.size > QMEDIA_MAX_BYTES) {
+      f.mediaBusy = false; f.mediaError = "L'image reste trop lourde (3 Mo maximum) après compression."; render(); return;
+    }
+    const initRes = await mediaFn("init_question_media_upload", { file_name: file.name, mime_type: file.type, file_size: file.size });
+    if (!initRes || initRes.error || !initRes.upload_url) {
+      f.mediaBusy = false;
+      f.mediaError = (initRes && initRes.message) || "Impossible de préparer l'envoi de la photo.";
+      render(); return;
+    }
+    try {
+      await uploadFileToSignedUrl(initRes.upload_url, file);
+    } catch (e) {
+      f.mediaBusy = false; f.mediaError = "Échec de l'envoi de la photo. Vérifiez votre connexion et réessayez."; render(); return;
+    }
+    f.mediaUploaded.push(initRes.path);
+    item = { kind: "image", url: initRes.public_url, path: initRes.path, alt: d.alt.trim(), caption: d.caption.trim(), credit: d.credit.trim() };
+  } else {
+    const embed = parseQuestionVideoUrl(d.url);
+    if (!embed) { f.mediaError = "Lien vidéo non reconnu : collez un lien YouTube ou Vimeo."; render(); return; }
+    item = { kind: "video", url: embed, caption: d.caption.trim(), credit: d.credit.trim() };
+    if (d.alt.trim()) item.alt = d.alt.trim();
+  }
+  f.media.push(item);
+  f.mediaBusy = false;
+  questionFormMediaDraftReset(f);
+  render();
+}
+
+function renderQuestionFormMedia(f, inputStyle) {
+  if (!Array.isArray(f.media)) f.media = [];
+  if (!f.mediaDraft) questionFormMediaDraftReset(f);
+  const d = f.mediaDraft;
+  const box = el(`<div style="margin:4px 0 14px;padding:12px;border:1px dashed var(--border);border-radius:10px;"></div>`);
+  box.appendChild(el(`<div style="font-size:12.5px;font-weight:700;margin-bottom:4px;">Médias (photos / vidéos) — facultatif</div>`));
+  box.appendChild(el(`<p class="help" style="margin:0 0 8px;">4 maximum. Photos JPEG, PNG ou WEBP (redimensionnées automatiquement) ; vidéos YouTube ou Vimeo. Le crédit est obligatoire : auteur, source ou accord de l'ASSDCA.</p>`));
+  if (f.mediaError) box.appendChild(el(`<div style="color:var(--critical);font-size:13px;margin-bottom:8px;">${esc(f.mediaError)}</div>`));
+
+  f.media.forEach((m, i) => {
+    const row = el(`<div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;"></div>`);
+    if (m.kind === "image" && isSafeQuestionMediaUrl(m)) {
+      const th = document.createElement("img");
+      th.src = m.url; th.alt = m.alt || "";
+      th.style.cssText = "width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid var(--border);";
+      row.appendChild(th);
+    } else {
+      row.appendChild(el(`<span class="pill">Vidéo</span>`));
+    }
+    const txt = document.createElement("div");
+    txt.style.cssText = "flex:1;font-size:13px;line-height:1.4;";
+    txt.textContent = (m.kind === "image" ? "Photo" : "Vidéo") + " — " + (m.caption || m.alt || "sans légende") + " (crédit : " + m.credit + ")";
+    row.appendChild(txt);
+    const rm = el(`<button class="btn secondary" type="button" style="padding:4px 10px;">Retirer</button>`);
+    rm.onclick = () => questionFormRemoveMedia(i);
+    row.appendChild(rm);
+    box.appendChild(row);
+  });
+
+  if (f.media.length < QMEDIA_MAX_ITEMS) {
+    const kindRow = el(`<div class="choice-row" style="margin:6px 0 10px;"></div>`);
+    [["image", "Photo"], ["video", "Vidéo (YouTube / Vimeo)"]].forEach(([k, label]) => {
+      const chip = el(`<div class="chip ${d.kind === k ? "selected" : ""}">${label}</div>`);
+      chip.onclick = () => { d.kind = k; render(); };
+      kindRow.appendChild(chip);
+    });
+    box.appendChild(kindRow);
+
+    if (d.kind === "image") {
+      const fileInput = el(`<input type="file" accept="image/jpeg,image/png,image/webp" style="margin-bottom:8px;" />`);
+      fileInput.onchange = () => { d.file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null; d.fileName = d.file ? d.file.name : ""; render(); };
+      box.appendChild(fileInput);
+      if (d.fileName) box.appendChild(el(`<div class="help" style="margin-bottom:8px;">Fichier choisi : ${esc(d.fileName)}</div>`));
+      const alt = el(`<input type="text" placeholder="Texte alternatif (décrivez la photo) — obligatoire" maxlength="300" value="${esc(d.alt)}" style="${inputStyle}" />`);
+      alt.oninput = (e) => { d.alt = e.target.value; };
+      box.appendChild(alt);
+    } else {
+      const url = el(`<input type="text" placeholder="Lien YouTube ou Vimeo" value="${esc(d.url)}" style="${inputStyle}" />`);
+      url.oninput = (e) => { d.url = e.target.value; };
+      box.appendChild(url);
+    }
+    const cap = el(`<input type="text" placeholder="Légende (facultative)" maxlength="300" value="${esc(d.caption)}" style="${inputStyle}" />`);
+    cap.oninput = (e) => { d.caption = e.target.value; };
+    box.appendChild(cap);
+    const cred = el(`<input type="text" placeholder="Crédit : auteur, source ou accord ASSDCA — obligatoire" maxlength="200" value="${esc(d.credit)}" style="${inputStyle}" />`);
+    cred.oninput = (e) => { d.credit = e.target.value; };
+    box.appendChild(cred);
+    const addBtn = el(`<button class="btn secondary" type="button" ${f.mediaBusy ? "disabled" : ""}>${f.mediaBusy ? "Envoi en cours…" : "Ajouter ce média"}</button>`);
+    addBtn.onclick = questionFormAddMedia;
+    box.appendChild(addBtn);
+  }
+  return box;
+}
+
 async function submitDocForm() {
   const f = state.docForm;
   f.error = null;
@@ -7004,7 +7305,7 @@ function renderQuestionsAdmin() {
       const row = el(`<div class="card qa-q">
         <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start;">
           <div style="flex:1;min-width:200px;">
-            <div class="qa-meta"><span>${esc(themeLabel(q.theme))}</span><span class="pill">${esc(TYPE_LABELS[q.type] || q.type)}</span><span class="pill diff-${esc(q.difficulty)}">${esc(q.difficulty)}</span></div>
+            <div class="qa-meta"><span>${esc(themeLabel(q.theme))}</span><span class="pill">${esc(TYPE_LABELS[q.type] || q.type)}</span><span class="pill diff-${esc(q.difficulty)}">${esc(q.difficulty)}</span>${q.media && q.media.length ? '<span class="pill">📷 ' + q.media.length + "</span>" : ""}</div>
             <div style="font-weight:600;font-size:14px;">${esc(summary)}</div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;" id="qActions-${q.id}"></div>
@@ -7173,6 +7474,8 @@ function renderQuestionForm() {
     addAnswerBtn.onclick = questionFormAddAnswer;
     wrap.appendChild(addAnswerBtn);
   }
+
+  wrap.appendChild(renderQuestionFormMedia(f, inputStyle));
 
   wrap.appendChild(el(`<label style="display:block;font-size:12.5px;font-weight:700;margin-bottom:6px;">Explication (affichée après la réponse)</label>`));
   const explInput = el(`<textarea placeholder="Explication pédagogique" rows="2" style="${inputStyle}resize:vertical;">${esc(f.explanation)}</textarea>`);
