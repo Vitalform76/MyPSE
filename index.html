@@ -2417,6 +2417,11 @@ function openQuestionForm(themeId, question) {
   }
   questionFormInitMedia(question);
   render();
+  // Le formulaire s'affiche au-dessus de la liste : on fait défiler la page jusqu'à lui.
+  setTimeout(() => {
+    const card = document.getElementById("questionFormCard");
+    if (card && card.scrollIntoView) card.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 50);
 }
 function closeQuestionForm() {
   // Photos envoyées pendant cette session mais jamais enregistrées : on les supprime.
@@ -2463,13 +2468,7 @@ async function submitQuestionForm() {
     payload.q = f.q.trim(); payload.answers = answers;
   }
 
-  payload.media = (f.media || []).map(m => {
-    const o = { kind: m.kind, url: m.url, credit: m.credit };
-    if (m.alt) o.alt = m.alt;
-    if (m.caption) o.caption = m.caption;
-    if (m.path) o.path = m.path;
-    return o;
-  });
+  payload.media = mediaPayloadOf(f);
 
   f.busy = true; render();
   let r;
@@ -3890,7 +3889,12 @@ function renderProposalsCard() {
   const card = el(`<div class="card" style="margin-bottom:16px;"></div>`);
   const head = el(`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;"><h3 style="margin:0;">Propositions de questions</h3></div>`);
   const tg = el(`<button class="btn secondary" style="font-size:12px;padding:6px 12px;">${EXTRAS.pfOpen ? "Fermer" : "+ Proposer une question"}</button>`);
-  tg.onclick = () => { EXTRAS.pfOpen = !EXTRAS.pfOpen; EXTRAS.pfMsg = null; render(); };
+  tg.onclick = () => {
+    // Fermeture : les photos envoyées mais non soumises sont supprimées du stockage.
+    if (EXTRAS.pfOpen && EXTRAS.pfMedia) questionFormCleanupMediaFiles(EXTRAS.pfMedia.mediaUploaded);
+    EXTRAS.pfMedia = null;
+    EXTRAS.pfOpen = !EXTRAS.pfOpen; EXTRAS.pfMsg = null; render();
+  };
   head.appendChild(tg); card.appendChild(head);
   card.appendChild(el(`<div class="help" style="margin:4px 0 8px;">Une question proposée n'est publiée qu'après validation par un autre formateur (l'administrateur peut valider seul).</div>`));
   if (EXTRAS.pfOpen) {
@@ -3908,6 +3912,13 @@ function renderProposalsCard() {
       <textarea id="pfExpl" rows="2" placeholder="Explication / source (référentiel INRS, DGSCGC…)" style="width:100%;margin-bottom:8px;"></textarea>
       <div class="help" id="pfErr" style="color:var(--critical);"></div>
     </div>`);
+    // Bloc médias : il se redessine seul, pour ne pas effacer les champs déjà saisis.
+    if (!EXTRAS.pfMedia) EXTRAS.pfMedia = { media: [], mediaUploaded: [], mediaBusy: false, mediaError: null, mediaDraft: { kind: "image", file: null, fileName: "", url: "", alt: "", caption: "", credit: "" } };
+    const pfInputStyle = "width:100%;margin-bottom:8px;padding:8px 10px;font-size:13.5px;border-radius:7px;border:1px solid var(--border);font-family:inherit;";
+    const mediaHost = document.createElement("div");
+    const refreshMedia = () => { mediaHost.innerHTML = ""; mediaHost.appendChild(renderMediaEditor(EXTRAS.pfMedia, pfInputStyle, refreshMedia)); };
+    refreshMedia();
+    f.insertBefore(mediaHost, f.querySelector("#pfErr"));
     const typeSel = f.querySelector("#pfType");
     typeSel.onchange = () => {
       f.querySelector("#pfQcm").style.display = typeSel.value === "qcm" ? "" : "none";
@@ -3933,10 +3944,12 @@ function renderProposalsCard() {
         if (!an.length) { err.textContent = "Indiquez au moins une réponse acceptée."; return; }
         payload.answers = an;
       }
+      if (EXTRAS.pfMedia && EXTRAS.pfMedia.mediaBusy) { err.textContent = "Patientez : l'envoi de la photo est en cours."; return; }
+      payload.media = mediaPayloadOf(EXTRAS.pfMedia || {});
       send.disabled = true;
       const r = await rpc("app_propose_question", { p_token: state.auth.token, p_payload: payload });
-      if (r && r.ok) { EXTRAS.pfOpen = false; EXTRAS.pfMsg = "Proposition envoyée."; await loadProposals(); render(); }
-      else { send.disabled = false; err.textContent = "Envoi impossible pour le moment."; }
+      if (r && r.ok) { EXTRAS.pfMedia = null; EXTRAS.pfOpen = false; EXTRAS.pfMsg = "Proposition envoyée."; await loadProposals(); render(); }
+      else { send.disabled = false; err.textContent = (r && r.error === "invalid_media") ? "Média invalide : crédit obligatoire, texte alternatif pour les photos, 4 médias maximum." : "Envoi impossible pour le moment."; }
     };
     f.appendChild(send); card.appendChild(f);
   }
@@ -3956,6 +3969,8 @@ function renderProposalsCard() {
       <div style="font-size:12.5px;color:var(--text-secondary);margin-top:3px;">${esc(q.explanation || "")}</div>
       ${it.review_note ? `<div style="font-size:12px;color:var(--text-muted);margin-top:3px;">Note : ${esc(it.review_note)}</div>` : ""}
     </div>`);
+    const pMedia = renderQuestionMedia(q.media);
+    if (pMedia) { pMedia.style.marginTop = "8px"; row.appendChild(pMedia); }
     if (it.status === "en_attente") {
       const own = P.me && it.proposed_by === P.me && !isAdministrateur();
       if (own) row.appendChild(el(`<div class="help" style="margin-top:6px;">À valider par un autre formateur.</div>`));
@@ -3964,7 +3979,11 @@ function renderProposalsCard() {
           let note = null;
           if (!acc) { note = prompt("Motif du refus (facultatif) :"); if (note === null) return; }
           const r = await rpc("app_review_question_proposal", { p_token: state.auth.token, p_id: it.id, p_accept: acc, p_note: note });
-          if (r && r.ok) { await loadProposals(); if (acc) await goToQuestionsAdmin(); else render(); }
+          if (r && r.ok) {
+            // Proposition refusée : on supprime ses photos du stockage.
+            if (!acc) questionFormCleanupMediaFiles((q.media || []).map(m => m.path));
+            await loadProposals(); if (acc) await goToQuestionsAdmin(); else render();
+          }
           else alert("Action impossible : " + ((r && r.error) || "erreur"));
         };
         const ok = el(`<button class="btn" style="font-size:12px;padding:5px 10px;margin-top:6px;">Valider et publier</button>`);
@@ -6866,58 +6885,74 @@ function questionFormCleanupMediaFiles(paths) {
 
 function questionFormRemoveMedia(i) { state.questionForm.media.splice(i, 1); render(); }
 
-async function questionFormAddMedia() {
-  const f = state.questionForm;
+// Liste de médias prête à envoyer au serveur.
+function mediaPayloadOf(f) {
+  return (f.media || []).map(m => {
+    const o = { kind: m.kind, url: m.url, credit: m.credit };
+    if (m.alt) o.alt = m.alt;
+    if (m.caption) o.caption = m.caption;
+    if (m.path) o.path = m.path;
+    return o;
+  });
+}
+
+async function questionFormAddMedia() { return mediaHolderAdd(state.questionForm, render); }
+
+// Ajoute le média en préparation à un « porteur » (formulaire de question ou de proposition).
+// rerender : fonction qui redessine uniquement la zone concernée.
+async function mediaHolderAdd(f, rerender) {
   const d = f.mediaDraft;
   f.mediaError = null;
-  if (f.media.length >= QMEDIA_MAX_ITEMS) { f.mediaError = "4 médias maximum par question."; render(); return; }
-  if (!d.credit.trim()) { f.mediaError = "Le crédit est obligatoire (auteur, source ou accord de l'ASSDCA)."; render(); return; }
+  if (f.media.length >= QMEDIA_MAX_ITEMS) { f.mediaError = "4 médias maximum par question."; rerender(); return; }
+  if (!d.credit.trim()) { f.mediaError = "Le crédit est obligatoire (auteur, source ou accord de l'ASSDCA)."; rerender(); return; }
   let item;
   if (d.kind === "image") {
-    if (!d.file) { f.mediaError = "Choisissez une photo (JPEG, PNG ou WEBP)."; render(); return; }
-    if (!d.alt.trim()) { f.mediaError = "Le texte alternatif est obligatoire : décrivez la photo en une phrase."; render(); return; }
-    f.mediaBusy = true; render();
+    if (!d.file) { f.mediaError = "Choisissez une photo (JPEG, PNG ou WEBP)."; rerender(); return; }
+    if (!d.alt.trim()) { f.mediaError = "Le texte alternatif est obligatoire : décrivez la photo en une phrase."; rerender(); return; }
+    f.mediaBusy = true; rerender();
     let file;
     try {
       file = await compressQuestionImage(d.file);
     } catch (e) {
-      f.mediaBusy = false; f.mediaError = "Impossible de préparer cette image. Essayez une autre photo."; render(); return;
+      f.mediaBusy = false; f.mediaError = "Impossible de préparer cette image. Essayez une autre photo."; rerender(); return;
     }
     if (file.size > QMEDIA_MAX_BYTES) {
-      f.mediaBusy = false; f.mediaError = "L'image reste trop lourde (3 Mo maximum) après compression."; render(); return;
+      f.mediaBusy = false; f.mediaError = "L'image reste trop lourde (3 Mo maximum) après compression."; rerender(); return;
     }
     const initRes = await mediaFn("init_question_media_upload", { file_name: file.name, mime_type: file.type, file_size: file.size });
     if (!initRes || initRes.error || !initRes.upload_url) {
       f.mediaBusy = false;
       f.mediaError = (initRes && initRes.message) || "Impossible de préparer l'envoi de la photo.";
-      render(); return;
+      rerender(); return;
     }
     try {
       await uploadFileToSignedUrl(initRes.upload_url, file);
     } catch (e) {
-      f.mediaBusy = false; f.mediaError = "Échec de l'envoi de la photo. Vérifiez votre connexion et réessayez."; render(); return;
+      f.mediaBusy = false; f.mediaError = "Échec de l'envoi de la photo. Vérifiez votre connexion et réessayez."; rerender(); return;
     }
     f.mediaUploaded.push(initRes.path);
     item = { kind: "image", url: initRes.public_url, path: initRes.path, alt: d.alt.trim(), caption: d.caption.trim(), credit: d.credit.trim() };
   } else {
     const embed = parseQuestionVideoUrl(d.url);
-    if (!embed) { f.mediaError = "Lien vidéo non reconnu : collez un lien YouTube ou Vimeo."; render(); return; }
+    if (!embed) { f.mediaError = "Lien vidéo non reconnu : collez un lien YouTube ou Vimeo."; rerender(); return; }
     item = { kind: "video", url: embed, caption: d.caption.trim(), credit: d.credit.trim() };
     if (d.alt.trim()) item.alt = d.alt.trim();
   }
   f.media.push(item);
   f.mediaBusy = false;
   questionFormMediaDraftReset(f);
-  render();
+  rerender();
 }
 
-function renderQuestionFormMedia(f, inputStyle) {
+function renderQuestionFormMedia(f, inputStyle) { return renderMediaEditor(f, inputStyle, render); }
+
+function renderMediaEditor(f, inputStyle, rerender) {
   if (!Array.isArray(f.media)) f.media = [];
   if (!f.mediaDraft) questionFormMediaDraftReset(f);
   const d = f.mediaDraft;
   const box = el(`<div style="margin:4px 0 14px;padding:12px;border:1px dashed var(--border);border-radius:10px;"></div>`);
   box.appendChild(el(`<div style="font-size:12.5px;font-weight:700;margin-bottom:4px;">Médias (photos / vidéos) — facultatif</div>`));
-  box.appendChild(el(`<p class="help" style="margin:0 0 8px;">4 maximum. Photos JPEG, PNG ou WEBP (redimensionnées automatiquement) ; vidéos YouTube ou Vimeo. Le crédit est obligatoire : auteur, source ou accord de l'ASSDCA.</p>`));
+  box.appendChild(el(`<p class="help" style="margin:0 0 8px;">4 maximum. Photos JPEG, PNG ou WEBP (redimensionnées automatiquement) ; vidéos YouTube ou Vimeo. Le crédit est obligatoire : auteur, source ou accord de l'ASSDCA. <b>Photos et vidéos réalistes uniquement</b> (gestes et situations de secourisme réels ou mises en situation crédibles) : pas de dessin, d'illustration ni d'image générique.</p>`));
   if (f.mediaError) box.appendChild(el(`<div style="color:var(--critical);font-size:13px;margin-bottom:8px;">${esc(f.mediaError)}</div>`));
 
   f.media.forEach((m, i) => {
@@ -6935,7 +6970,7 @@ function renderQuestionFormMedia(f, inputStyle) {
     txt.textContent = (m.kind === "image" ? "Photo" : "Vidéo") + " — " + (m.caption || m.alt || "sans légende") + " (crédit : " + m.credit + ")";
     row.appendChild(txt);
     const rm = el(`<button class="btn secondary" type="button" style="padding:4px 10px;">Retirer</button>`);
-    rm.onclick = () => questionFormRemoveMedia(i);
+    rm.onclick = () => { f.media.splice(i, 1); rerender(); };
     row.appendChild(rm);
     box.appendChild(row);
   });
@@ -6944,14 +6979,14 @@ function renderQuestionFormMedia(f, inputStyle) {
     const kindRow = el(`<div class="choice-row" style="margin:6px 0 10px;"></div>`);
     [["image", "Photo"], ["video", "Vidéo (YouTube / Vimeo)"]].forEach(([k, label]) => {
       const chip = el(`<div class="chip ${d.kind === k ? "selected" : ""}">${label}</div>`);
-      chip.onclick = () => { d.kind = k; render(); };
+      chip.onclick = () => { d.kind = k; rerender(); };
       kindRow.appendChild(chip);
     });
     box.appendChild(kindRow);
 
     if (d.kind === "image") {
       const fileInput = el(`<input type="file" accept="image/jpeg,image/png,image/webp" style="margin-bottom:8px;" />`);
-      fileInput.onchange = () => { d.file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null; d.fileName = d.file ? d.file.name : ""; render(); };
+      fileInput.onchange = () => { d.file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null; d.fileName = d.file ? d.file.name : ""; rerender(); };
       box.appendChild(fileInput);
       if (d.fileName) box.appendChild(el(`<div class="help" style="margin-bottom:8px;">Fichier choisi : ${esc(d.fileName)}</div>`));
       const alt = el(`<input type="text" placeholder="Texte alternatif (décrivez la photo) — obligatoire" maxlength="300" value="${esc(d.alt)}" style="${inputStyle}" />`);
@@ -6969,7 +7004,7 @@ function renderQuestionFormMedia(f, inputStyle) {
     cred.oninput = (e) => { d.credit = e.target.value; };
     box.appendChild(cred);
     const addBtn = el(`<button class="btn secondary" type="button" ${f.mediaBusy ? "disabled" : ""}>${f.mediaBusy ? "Envoi en cours…" : "Ajouter ce média"}</button>`);
-    addBtn.onclick = questionFormAddMedia;
+    addBtn.onclick = () => mediaHolderAdd(f, rerender);
     box.appendChild(addBtn);
   }
   return box;
@@ -7369,6 +7404,7 @@ function renderThemeForm() {
 function renderQuestionForm() {
   const f = state.questionForm;
   const wrap = el(`<div class="card" style="margin:10px 0;background:var(--surface-1);"></div>`);
+  wrap.id = "questionFormCard";
   wrap.appendChild(el(`<h3 style="margin-top:0;">${f.editingId ? "Modifier la question" : "Nouvelle question"}</h3>`));
   if (f.error) wrap.appendChild(el(`<div class="empty-state" style="color:var(--critical);">${esc(f.error)}</div>`));
   const inputStyle = "width:100%;margin-bottom:12px;padding:10px 12px;font-size:14px;border-radius:8px;border:1px solid var(--border);background:var(--surface-1);font-family:inherit;";
