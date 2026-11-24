@@ -2919,6 +2919,8 @@ function render() {
   else if (state.view === "createProfile") appDiv.appendChild(renderCreateProfilePage());
   else if (state.view === "questionsAdmin") appDiv.appendChild(renderQuestionsAdmin());
   else if (state.view === "myTraining") appDiv.appendChild(renderMyTraining());
+  else if (state.view === "selfStudy") appDiv.appendChild(renderSelfStudy());
+  else if (state.view === "selfStudyTrack") appDiv.appendChild(renderSelfStudyTrack());
   else if (state.view === "learnerTraining") appDiv.appendChild(renderLearnerTraining());
   else if (state.view === "trainingOverview") appDiv.appendChild(renderTrainingOverview());
   else if (state.view === "myFma") appDiv.appendChild(renderMyFma());
@@ -3003,6 +3005,12 @@ function renderSidebar() {
   const trainBtn = el(`<button class="${trainActive ? "active" : ""}"><span class="ic">${svgIcon("cap", 15)}</span>Formation initiale</button>`);
   trainBtn.onclick = () => { (isFormateur() ? goToTrainingOverview : goToMyTraining)(); closeMobileSidebar(); };
   navMain.appendChild(trainBtn);
+
+  // Auto-formation (lot 2, 24/11/2026) : quiz par module, "Terminé" automatique ; suivi côté formateur.
+  const ssActive = ["selfStudy", "selfStudyTrack"].includes(state.view);
+  const ssBtn = el(`<button class="${ssActive ? "active" : ""}"><span class="ic">${svgIcon("book", 15)}</span>${isFormateur() ? "Suivi auto-formation" : "Auto-formation"}</button>`);
+  ssBtn.onclick = () => { (isFormateur() ? goToSelfStudyTrack : goToSelfStudy)(); closeMobileSidebar(); };
+  navMain.appendChild(ssBtn);
 
   // Groupe "Mes formations" (réordonné le 29/08/2026 selon la demande du porteur de projet) : Ma
   // progression, puis les trois fonctions dans l'ordre PSC → Secouriste → Équipier Secouriste, puis
@@ -5341,6 +5349,381 @@ function appendStatsRow(tbody, sr) {
     cell.appendChild(actionsRow);
     tbody.appendChild(detailRow);
   }
+}
+
+/* ============================================================
+   AUTO-FORMATION (lot 2, 24/11/2026) — l'apprenant avance seul, module par module, avec un quiz noté
+   côté serveur (seuil 80 %, reprises illimitées). "Terminé" = quiz réussi (automatique) ; "Validé" =
+   décision du formateur (table training_progress, inchangée). Parcours "Bases" recommandé, jamais
+   bloquant. Les modules courts sont verrouillés dans l'ordre. Chapitre pilote : Urgences vitales.
+   ============================================================ */
+const SS = {
+  data: null,        // null | "loading" | { niveau, modules } | { error }
+  quiz: null,        // null | { moduleId, submoduleId, title, questions, idx, answers, busy, error, result }
+  track: null,       // null | "loading" | { modules, learners, attempts, progress } | { error }
+  trackFilter: "all",
+  trackOpen: null,   // id d'apprenant dont le détail est ouvert
+  trackBusy: false,
+  msg: null
+};
+
+async function goToSelfStudy() {
+  state.view = "selfStudy";
+  SS.quiz = null; SS.msg = null;
+  SS.data = "loading";
+  render();
+  const r = await rpc("app_selfstudy_overview", { p_token: state.auth.token });
+  SS.data = (r && r.modules) ? r : { error: true };
+  render();
+}
+
+async function goToSelfStudyTrack() {
+  state.view = "selfStudyTrack";
+  SS.track = "loading"; SS.msg = null;
+  render();
+  const r = await rpc("app_formateur_selfstudy_overview", { p_token: state.auth.token });
+  SS.track = (r && r.modules) ? r : { error: true };
+  render();
+}
+
+function ssPct(score, total) { return total ? Math.round(score / total * 100) : 0; }
+
+async function ssStartQuiz(moduleId, submoduleId, title) {
+  SS.msg = null;
+  const r = await rpc("app_selfstudy_start_quiz", { p_token: state.auth.token, p_module_id: moduleId, p_submodule_id: submoduleId || null });
+  if (!r || !r.ok) {
+    const map = { locked: "Terminez d'abord le module précédent.", no_questions: "Le quiz de ce module n'est pas encore disponible.", not_found: "Module introuvable.", invalid_session: "Session expirée, reconnectez-vous." };
+    SS.msg = (r && map[r.error]) || (r && r.message) || "Impossible de démarrer le quiz.";
+    render();
+    return;
+  }
+  const answers = {};
+  r.questions.forEach(q => {
+    if (q.type === "order") answers[q.id] = (q.items || []).map(x => x.i);
+  });
+  SS.quiz = { moduleId, submoduleId: submoduleId || null, title, questions: r.questions, idx: 0, answers, busy: false, error: null, result: null };
+  render();
+}
+
+function ssAnswered(q) {
+  const a = SS.quiz.answers[q.id];
+  if (q.type === "short") return typeof a === "string" && a.trim() !== "";
+  if (q.type === "order") return Array.isArray(a) && a.length > 0;
+  return Array.isArray(a) && a.length > 0;
+}
+
+async function ssSubmitQuiz() {
+  const z = SS.quiz;
+  if (!z || z.busy) return;
+  z.busy = true; z.error = null; render();
+  const answers = z.questions.map(q => ({ id: q.id, answer: z.answers[q.id] === undefined ? null : z.answers[q.id] }));
+  const r = await rpc("app_selfstudy_submit_quiz", { p_token: state.auth.token, p_module_id: z.moduleId, p_submodule_id: z.submoduleId, p_answers: answers });
+  z.busy = false;
+  if (!r || !r.ok) {
+    z.error = (r && r.error === "locked") ? "Terminez d'abord le module précédent." : ((r && r.message) || "Envoi impossible. Réessayez.");
+    render();
+    return;
+  }
+  z.result = r;
+  render();
+}
+
+async function ssMarkRead(moduleId, submoduleId) {
+  const r = await rpc("app_selfstudy_mark_read", { p_token: state.auth.token, p_module_id: moduleId, p_submodule_id: submoduleId });
+  if (!r || !r.ok) { SS.msg = (r && r.error === "locked") ? "Terminez d'abord le module précédent." : ((r && r.message) || "Action impossible."); render(); return; }
+  goToSelfStudy();
+}
+
+function ssStatusPill(sm) {
+  if (sm.validated) return '<span class="pill ok" style="background:var(--blue);color:#fff;">Validé par le formateur</span>';
+  if (sm.passed) return '<span class="pill ok">Terminé</span>' + (sm.question_count === 0 ? ' <span class="pill">sans quiz</span>' : "");
+  if (sm.locked) return '<span class="pill">🔒 Verrouillé</span>';
+  if (sm.attempts > 0) return '<span class="pill warn">Quiz à repasser</span>';
+  return '<span class="pill">À faire</span>';
+}
+
+function renderSelfStudy() {
+  const container = el(`<div></div>`);
+  container.appendChild(el(`<div class="page-header">${iconChip("cap", {color: "teal"})}<div><div class="page-title">Auto-formation</div><div class="page-sub">Avancez à votre rythme : lisez chaque fiche, puis réussissez le quiz (80 % minimum) pour terminer le module.</div></div></div>`));
+
+  if (SS.quiz) { container.appendChild(renderSelfStudyQuiz()); return container; }
+
+  if (SS.data === "loading" || SS.data === null) { container.appendChild(el(`<div class="card"><div class="empty-state">Chargement…</div></div>`)); return container; }
+  if (SS.data.error) { container.appendChild(el(`<div class="card"><div class="empty-state">Auto-formation indisponible pour le moment.</div></div>`)); return container; }
+  if (!SS.data.modules.length) { container.appendChild(el(`<div class="card"><div class="empty-state">Aucun module d'auto-formation n'est encore disponible pour votre niveau.</div></div>`)); return container; }
+
+  if (SS.msg) container.appendChild(el(`<div class="card" style="border-left:3px solid var(--critical);"><div class="help" style="color:var(--critical);">${esc(SS.msg)}</div></div>`));
+
+  SS.data.modules.forEach(m => {
+    const total = m.submodules.length;
+    const done = m.submodules.filter(sm => sm.done).length;
+    const pct = total ? Math.round(done / total * 100) : 0;
+    const card = el(`<div class="card accent-teal">
+      <div class="mod-head"><h3>${esc(m.label)}</h3><span class="help">${done}/${total} terminés</span></div>
+      <span class="bar-outer" style="display:block;"><span class="bar-inner ${progressBarClass(pct)}" style="width:${pct}%"></span></span>
+    </div>`);
+
+    // Parcours "Bases" : recommandé, non bloquant
+    const b = m.bases || {};
+    const basesRow = el(`<div class="mod-row" style="margin-top:12px;border:1px dashed var(--border);border-radius:10px;padding:10px;">
+      <div class="mr-top"><span><b>Parcours « Bases »</b> <span class="help">· lecture guidée des ${total} fiches puis quiz de synthèse (10 questions)</span></span>
+      <span>${b.done ? '<span class="pill ok">Terminé</span>' : '<span class="pill">Recommandé pour démarrer</span>'}</span></div>
+      ${b.attempts ? `<div class="help" style="margin-top:4px;">${b.done ? "Meilleur score : " + b.best_score + "/" + b.best_total : "Tentatives : " + b.attempts}${b.last_at ? " · dernière le " + fmtDateFR(b.last_at) : ""}</div>` : ""}
+    </div>`);
+    const readDet = el(`<details style="margin-top:8px;"><summary style="font-size:12px;font-weight:700;color:var(--blue);cursor:pointer;">Lire les fiches du chapitre</summary><div style="margin-top:6px;"></div></details>`);
+    const readBody = readDet.querySelector("div");
+    m.submodules.forEach((sm, i) => {
+      if (!sm.content) return;
+      readBody.appendChild(el(`<div style="margin-bottom:10px;"><div style="font-weight:700;font-size:13px;">${i + 1}. ${esc(sm.label)}</div><div class="help" style="white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(sm.content)}</div></div>`));
+    });
+    basesRow.appendChild(readDet);
+    const bBtn = el(`<button class="btn secondary" style="margin-top:8px;font-size:12px;padding:6px 12px;">${b.done ? "Refaire le quiz de synthèse" : "Passer le quiz de synthèse"}</button>`);
+    bBtn.onclick = () => ssStartQuiz(m.id, null, m.label + " — Bases");
+    basesRow.appendChild(bBtn);
+    card.appendChild(basesRow);
+
+    // Modules courts, dans l'ordre
+    const list = el(`<div style="margin-top:12px;"></div>`);
+    m.submodules.forEach((sm, i) => {
+      const row = el(`<div class="mod-row" ${sm.locked ? 'style="opacity:.7;"' : ""}>
+        <div class="mr-top"><span><b>${i + 1}.</b> ${esc(sm.label)}</span><span>${ssStatusPill(sm)}</span></div>
+      </div>`);
+      if (sm.attempts > 0 && sm.best_total) row.appendChild(el(`<div class="help" style="margin-top:3px;">Meilleur score : ${sm.best_score}/${sm.best_total} (${ssPct(sm.best_score, sm.best_total)} %) · ${sm.attempts} tentative${sm.attempts > 1 ? "s" : ""}${sm.last_at ? " · dernière le " + fmtDateFR(sm.last_at) : ""}</div>`));
+      if (sm.locked) {
+        row.appendChild(el(`<div class="help" style="margin-top:3px;">Se débloque quand le module précédent est terminé.</div>`));
+      } else {
+        const cb = renderSubmoduleContentBlock(sm.content);
+        if (cb) row.appendChild(cb);
+        if (!sm.done || sm.question_count > 0) {
+          if (sm.question_count > 0) {
+            const qb = el(`<button class="btn" style="margin-top:8px;font-size:12px;padding:6px 12px;">${sm.passed ? "Refaire le quiz" : (sm.attempts > 0 ? "Repasser le quiz" : "Passer le quiz")} (${sm.question_count} question${sm.question_count > 1 ? "s" : ""})</button>`);
+            qb.onclick = () => ssStartQuiz(m.id, sm.id, sm.label);
+            row.appendChild(qb);
+          } else if (!sm.done) {
+            row.appendChild(el(`<div class="help" style="margin-top:3px;">Le quiz de ce module n'est pas encore disponible.</div>`));
+            const rb = el(`<button class="btn secondary" style="margin-top:8px;font-size:12px;padding:6px 12px;">J'ai lu cette fiche</button>`);
+            rb.onclick = () => ssMarkRead(m.id, sm.id);
+            row.appendChild(rb);
+          }
+        }
+      }
+      list.appendChild(row);
+    });
+    card.appendChild(list);
+    container.appendChild(card);
+  });
+  return container;
+}
+
+function ssQuestionText(q) { return q.type === "order" ? (q.scenario || q.q || "") : (q.q || ""); }
+
+function renderSelfStudyQuiz() {
+  const z = SS.quiz;
+  const wrap = el(`<div></div>`);
+  const back = el(`<button class="btn secondary" style="margin-bottom:10px;font-size:12px;padding:6px 12px;">← Retour au parcours</button>`);
+  back.onclick = () => { SS.quiz = null; goToSelfStudy(); };
+  wrap.appendChild(back);
+
+  if (z.result) { wrap.appendChild(renderSelfStudyResult()); return wrap; }
+
+  const q = z.questions[z.idx];
+  const last = z.idx === z.questions.length - 1;
+  const card = el(`<div class="card"></div>`);
+  card.appendChild(el(`<div class="mod-head"><h3>${esc(z.title)}</h3><span class="help">Question ${z.idx + 1} / ${z.questions.length}</span></div>`));
+  const pct = Math.round(z.idx / z.questions.length * 100);
+  card.appendChild(el(`<span class="bar-outer" style="display:block;margin-bottom:10px;"><span class="bar-inner" style="width:${pct}%"></span></span>`));
+  if (q.media && q.media.length && typeof renderQuestionMedia === "function") { const mm = renderQuestionMedia(q.media); if (mm) card.appendChild(mm); }
+  card.appendChild(el(`<div style="font-weight:600;font-size:14.5px;margin:6px 0 10px;white-space:pre-wrap;">${esc(ssQuestionText(q))}</div>`));
+  if (q.type === "order") card.appendChild(el(`<div class="help" style="margin-bottom:6px;">Remettez les actions dans le bon ordre avec les flèches.</div>`));
+  if (q.type === "qcm" && q.multi) card.appendChild(el(`<div class="help" style="margin-bottom:6px;">Plusieurs réponses possibles.</div>`));
+
+  const body = el(`<div></div>`);
+  const cur = z.answers[q.id];
+  if (q.type === "qcm" || q.type === "vf") {
+    (q.choices || []).forEach((c, i) => {
+      const checked = Array.isArray(cur) && cur.indexOf(i) >= 0;
+      const row = el(`<label style="display:flex;gap:8px;align-items:flex-start;padding:8px 10px;margin:0 0 6px;border:1px solid ${checked ? "var(--blue)" : "var(--border)"};border-radius:10px;cursor:pointer;background:${checked ? "var(--surface-1)" : "transparent"};"><input type="${q.multi ? "checkbox" : "radio"}" name="ssq" ${checked ? "checked" : ""} style="margin-top:3px;"><span>${esc(c)}</span></label>`);
+      row.querySelector("input").onchange = () => {
+        if (q.multi) {
+          const a = Array.isArray(z.answers[q.id]) ? z.answers[q.id].slice() : [];
+          const p = a.indexOf(i);
+          if (p >= 0) a.splice(p, 1); else a.push(i);
+          z.answers[q.id] = a;
+        } else {
+          z.answers[q.id] = [i];
+        }
+        z.error = null; render();
+      };
+      body.appendChild(row);
+    });
+  } else if (q.type === "short") {
+    const inp = el(`<input type="text" id="ssShort" autocomplete="off" placeholder="Votre réponse" style="width:100%;" value="${esc(typeof cur === "string" ? cur : "")}">`);
+    inp.oninput = () => { z.answers[q.id] = inp.value; z.error = null; };
+    body.appendChild(inp);
+  } else if (q.type === "order") {
+    const textOf = {};
+    (q.items || []).forEach(x => { textOf[x.i] = x.t; });
+    const ord = Array.isArray(cur) ? cur : (q.items || []).map(x => x.i);
+    ord.forEach((idx, pos) => {
+      const row = el(`<div style="display:flex;gap:8px;align-items:center;padding:8px 10px;margin:0 0 6px;border:1px solid var(--border);border-radius:10px;"><span style="font-weight:700;min-width:18px;">${pos + 1}</span><span style="flex:1;">${esc(textOf[idx])}</span></div>`);
+      const up = el(`<button class="btn secondary" style="padding:2px 9px;font-size:13px;" aria-label="Monter" ${pos === 0 ? "disabled" : ""}>↑</button>`);
+      const dn = el(`<button class="btn secondary" style="padding:2px 9px;font-size:13px;" aria-label="Descendre" ${pos === ord.length - 1 ? "disabled" : ""}>↓</button>`);
+      const swap = (a, b) => { const n = ord.slice(); const t = n[a]; n[a] = n[b]; n[b] = t; z.answers[q.id] = n; render(); };
+      up.onclick = () => swap(pos, pos - 1);
+      dn.onclick = () => swap(pos, pos + 1);
+      row.appendChild(up); row.appendChild(dn);
+      body.appendChild(row);
+    });
+  }
+  card.appendChild(body);
+  if (z.error) card.appendChild(el(`<div class="help" style="color:var(--critical);margin-top:6px;">${esc(z.error)}</div>`));
+
+  const nav = el(`<div class="actions-row" style="margin-top:12px;"></div>`);
+  if (z.idx > 0) {
+    const prev = el(`<button class="btn secondary">Précédente</button>`);
+    prev.onclick = () => { z.idx--; z.error = null; render(); };
+    nav.appendChild(prev);
+  }
+  const nxt = el(`<button class="btn" ${z.busy ? "disabled" : ""}>${last ? (z.busy ? "Correction…" : "Terminer le quiz") : "Suivante"}</button>`);
+  nxt.onclick = () => {
+    if (!ssAnswered(q)) { z.error = "Répondez à la question avant de continuer."; render(); return; }
+    if (!last) { z.idx++; z.error = null; render(); return; }
+    const missing = z.questions.findIndex(x => !ssAnswered(x));
+    if (missing >= 0) { z.idx = missing; z.error = "Il reste une question sans réponse."; render(); return; }
+    ssSubmitQuiz();
+  };
+  nav.appendChild(nxt);
+  card.appendChild(nav);
+  wrap.appendChild(card);
+  return wrap;
+}
+
+function ssCorrectText(q, r) {
+  if (q.type === "qcm" || q.type === "vf") return (r.correct || []).map(i => (q.choices || [])[i]).filter(Boolean).join(" · ");
+  if (q.type === "short") return (r.correct || []).join(" / ");
+  if (q.type === "order") return (r.correct || []).map((t, i) => (i + 1) + ". " + t).join("  ");
+  return "";
+}
+
+function renderSelfStudyResult() {
+  const z = SS.quiz, r = z.result;
+  const pct = ssPct(r.score, r.total);
+  const card = el(`<div class="card ${r.passed ? "accent-teal" : ""}">
+    <div class="mod-head"><h3>${esc(z.title)}</h3>${r.passed ? '<span class="pill ok">Module terminé</span>' : '<span class="pill warn">Seuil non atteint</span>'}</div>
+    <div style="font-size:26px;font-weight:800;margin:6px 0;">${r.score}/${r.total} <span class="help">(${pct} %)</span></div>
+    <div class="help">${r.passed ? "Bravo, le module est terminé. Votre formateur pourra le valider." : "Il faut au moins " + r.threshold + " % de bonnes réponses. Relisez la fiche puis repassez le quiz : les reprises sont illimitées."}</div>
+  </div>`);
+  const byId = {};
+  (r.results || []).forEach(x => { byId[x.id] = x; });
+  z.questions.forEach((q, i) => {
+    const x = byId[q.id];
+    if (!x) return;
+    const ok = x.ok;
+    const row = el(`<div class="mod-row" style="margin-top:8px;"><div class="mr-top"><span><b>${i + 1}.</b> ${esc(ssQuestionText(q))}</span><span class="pill ${ok ? "ok" : "warn"}">${ok ? "Juste" : "À revoir"}</span></div>
+      ${ok ? "" : `<div class="help" style="margin-top:4px;"><b>Bonne réponse :</b> ${esc(ssCorrectText(q, x))}</div>`}
+      ${x.explanation ? `<div class="help" style="margin-top:4px;white-space:pre-wrap;">${esc(x.explanation)}</div>` : ""}</div>`);
+    card.appendChild(row);
+  });
+  const act = el(`<div class="actions-row" style="margin-top:12px;"></div>`);
+  if (!r.passed) {
+    const again = el(`<button class="btn">Repasser le quiz</button>`);
+    again.onclick = () => ssStartQuiz(z.moduleId, z.submoduleId, z.title);
+    act.appendChild(again);
+  }
+  const done = el(`<button class="btn secondary">Retour au parcours</button>`);
+  done.onclick = () => { SS.quiz = null; goToSelfStudy(); };
+  act.appendChild(done);
+  card.appendChild(act);
+  return card;
+}
+
+/* ---------- Suivi formateur ---------- */
+async function ssSetValidation(learnerId, submoduleId, status) {
+  if (SS.trackBusy) return;
+  SS.trackBusy = true;
+  const r = await rpc("app_formateur_set_progress", { p_token: state.auth.token, p_target_id: learnerId, p_submodule_id: submoduleId, p_status: status });
+  SS.trackBusy = false;
+  if (!r || !r.ok) { SS.msg = (r && r.message) || "Action impossible."; render(); return; }
+  const r2 = await rpc("app_formateur_selfstudy_overview", { p_token: state.auth.token });
+  if (r2 && r2.modules) SS.track = r2;
+  render();
+}
+
+function renderSelfStudyTrack() {
+  const container = el(`<div></div>`);
+  container.appendChild(el(`<div class="page-header">${iconChip("users", {color: "teal"})}<div><div class="page-title">Suivi de l'auto-formation</div><div class="page-sub">Modules terminés automatiquement (quiz réussi) et validation par le formateur.</div></div></div>`));
+  const t = SS.track;
+  if (t === "loading" || t === null) { container.appendChild(el(`<div class="card"><div class="empty-state">Chargement…</div></div>`)); return container; }
+  if (t.error) { container.appendChild(el(`<div class="card"><div class="empty-state">Suivi indisponible pour le moment.</div></div>`)); return container; }
+  if (SS.msg) container.appendChild(el(`<div class="card" style="border-left:3px solid var(--critical);"><div class="help" style="color:var(--critical);">${esc(SS.msg)}</div></div>`));
+
+  const attBySub = {}, basesByMod = {}, validated = {};
+  t.attempts.forEach(a => {
+    if (a.kind === "bases") basesByMod[a.account_id + "::" + a.module_id] = a;
+    else if (a.submodule_id) {
+      const k = a.account_id + "::" + a.submodule_id;
+      const prev = attBySub[k];
+      attBySub[k] = prev ? { attempts: prev.attempts + a.attempts, passed: prev.passed || a.passed, best_score: Math.max(prev.best_score, a.best_score), best_total: Math.max(prev.best_total, a.best_total), last_at: prev.last_at > a.last_at ? prev.last_at : a.last_at, kind: prev.kind } : a;
+    }
+  });
+  t.progress.forEach(p => { if (p.status === "valide") validated[p.account_id + "::" + p.submodule_id] = true; });
+
+  const nowMs = Date.now();
+  const rows = t.learners.map(l => {
+    let done = 0, valid = 0, toValidate = 0, total = 0;
+    t.modules.forEach(m => m.submodules.forEach(sm => {
+      total++;
+      const a = attBySub[l.id + "::" + sm.id];
+      const isV = !!validated[l.id + "::" + sm.id];
+      if (isV) valid++;
+      if ((a && a.passed) || isV) done++;
+      if (a && a.passed && !isV) toValidate++;
+    }));
+    const bases = t.modules.some(m => { const b = basesByMod[l.id + "::" + m.id]; return b && b.passed; });
+    const last = l.last_activity ? new Date(l.last_activity).getTime() : null;
+    const idle = (last === null) || ((nowMs - last) > 14 * 86400000);
+    return { l, done, valid, toValidate, total, bases, idle, hasStarted: last !== null };
+  });
+  const cWait = rows.filter(r => r.toValidate > 0).length;
+  const cIdle = rows.filter(r => r.idle).length;
+
+  const bar = el(`<div class="card" style="padding:10px 14px;"><div style="display:flex;gap:8px;flex-wrap:wrap;"></div></div>`);
+  const barIn = bar.firstChild;
+  [["all", "Tous (" + rows.length + ")"], ["wait", "À valider (" + cWait + ")"], ["idle", "Sans activité 14 j (" + cIdle + ")"]].forEach(([k, lab]) => {
+    const b = el(`<button class="btn ${SS.trackFilter === k ? "" : "secondary"}" style="font-size:12px;padding:6px 12px;">${esc(lab)}</button>`);
+    b.onclick = () => { SS.trackFilter = k; render(); };
+    barIn.appendChild(b);
+  });
+  container.appendChild(bar);
+
+  const shown = rows.filter(r => SS.trackFilter === "all" || (SS.trackFilter === "wait" && r.toValidate > 0) || (SS.trackFilter === "idle" && r.idle));
+  if (!shown.length) { container.appendChild(el(`<div class="card"><div class="empty-state">Aucun apprenant dans cette liste.</div></div>`)); return container; }
+
+  shown.forEach(r => {
+    const open = SS.trackOpen === r.l.id;
+    const card = el(`<div class="card"><div class="mod-head" style="cursor:pointer;"><div><b>${esc(r.l.full_name)}</b> <span class="help">${esc(r.l.niveau || "")}</span><div class="help">Dernière activité : ${r.l.last_activity ? fmtDateFR(r.l.last_activity) : "aucune"}</div></div>
+      <div style="text-align:right;"><div class="help">${r.bases ? "Bases ✓" : "Bases –"} · ${r.done}/${r.total} terminés · ${r.valid} validés</div>${r.toValidate > 0 ? `<span class="pill warn" style="background:#FAEEDA;color:#633806;">${r.toValidate} à valider</span>` : ""}</div></div></div>`);
+    card.querySelector(".mod-head").onclick = () => { SS.trackOpen = open ? null : r.l.id; render(); };
+    if (open) {
+      t.modules.forEach(m => {
+        card.appendChild(el(`<div style="font-weight:700;font-size:13px;margin:10px 0 4px;">${esc(m.label)}</div>`));
+        m.submodules.forEach(sm => {
+          const a = attBySub[r.l.id + "::" + sm.id];
+          const isV = !!validated[r.l.id + "::" + sm.id];
+          const pill = isV ? '<span class="pill ok" style="background:var(--blue);color:#fff;">Validé</span>' : (a && a.passed ? '<span class="pill ok">Terminé</span>' : (a ? '<span class="pill warn">Quiz non réussi</span>' : '<span class="pill">Non commencé</span>'));
+          const score = a && a.best_total ? `${a.best_score}/${a.best_total} · ${a.attempts} essai${a.attempts > 1 ? "s" : ""}` : (a && a.passed ? "lu, sans quiz" : (sm.question_count === 0 ? "pas de quiz" : ""));
+          const row = el(`<div class="mod-row"><div class="mr-top"><span>${sm.order_index}. ${esc(sm.label)} <span class="help">${esc(score)}${a && a.last_at ? " · " + fmtDateFR(a.last_at) : ""}</span></span><span style="display:flex;gap:6px;align-items:center;">${pill}</span></div></div>`);
+          const holder = row.querySelector(".mr-top > span:last-child");
+          const btn = el(`<button class="btn ${isV ? "secondary" : ""}" style="font-size:11.5px;padding:4px 10px;">${isV ? "Retirer la validation" : "Valider"}</button>`);
+          btn.onclick = (ev) => { ev.stopPropagation(); ssSetValidation(r.l.id, sm.id, isV ? "a_faire" : "valide"); };
+          holder.appendChild(btn);
+          card.appendChild(row);
+        });
+      });
+    }
+    container.appendChild(card);
+  });
+  return container;
 }
 
 /* ============================================================
