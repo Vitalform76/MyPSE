@@ -1700,6 +1700,7 @@ function filterPool() {
     if (s.themes !== "all" && !s.themes.includes(q.theme)) return false;
     if (!s.difficulties.includes(q.difficulty)) return false;
     if (s.mode === "situation" && q.type !== "order") return false;
+    if (q.status && q.status !== "validee") return false;
     return true;
   });
 }
@@ -2104,7 +2105,8 @@ async function goToPersonnelManagement() {
   state.view = "personnelManagement";
   state.secouristes = "loading";
   render();
-  const r = await rpc("app_list_secouristes", { p_token: state.auth.token });
+  GRP.flash = null;
+  const [r] = await Promise.all([rpc("app_list_secouristes", { p_token: state.auth.token }), loadGroups(true)]);
   state.secouristes = r && r.secouristes ? r.secouristes : { error: true };
   if (r && r.formateur_code) state.formateurCode = r.formateur_code;
   render();
@@ -2439,10 +2441,10 @@ function openQuestionForm(themeId, question) {
       correct: (question.correct || []).slice(),
       actions: (question.actions && question.actions.length ? question.actions.slice() : ["", ""]),
       answers: (question.answers && question.answers.length ? question.answers.slice() : [""]),
-      explanation: question.explanation || "", busy: false, error: null
+      explanation: question.explanation || "", status: question.status || "validee", statusInitial: question.status || "validee", busy: false, error: null
     };
   } else {
-    state.questionForm = { open: true, editingId: null, themeId: themeId || (THEMES[0] ? THEMES[0].id : ""), difficulty: "moyen", type: "qcm", q: "", scenario: "", choices: ["", ""], correct: [], actions: ["", ""], answers: [""], explanation: "", busy: false, error: null };
+    state.questionForm = { open: true, editingId: null, themeId: themeId || (THEMES[0] ? THEMES[0].id : ""), difficulty: "moyen", type: "qcm", q: "", scenario: "", choices: ["", ""], correct: [], actions: ["", ""], answers: [""], explanation: "", status: "validee", statusInitial: "validee", busy: false, error: null };
   }
   questionFormInitMedia(question);
   render();
@@ -2498,6 +2500,7 @@ async function submitQuestionForm() {
   }
 
   payload.media = mediaPayloadOf(f);
+  if (!f.editingId) payload.status = f.status || "validee";
 
   f.busy = true; render();
   let r;
@@ -2512,6 +2515,10 @@ async function submitQuestionForm() {
     f.error = (r && messages[r.error]) || "Impossible d'enregistrer cette question.";
     render();
     return;
+  }
+  if (f.editingId && f.status && f.status !== f.statusInitial) {
+    const sr = await rpc("app_set_question_status", { p_token: state.auth.token, p_ids: [f.editingId], p_status: f.status });
+    if (!sr || !sr.ok) alert("La question est enregistrée, mais son statut n'a pas pu être modifié.");
   }
   // Nettoyage du stockage : fichiers retirés de la question, ou envoyés puis abandonnés.
   const keptPaths = (f.media || []).map(m => m.path).filter(Boolean);
@@ -2577,6 +2584,16 @@ function openEditSessionForm(session) {
   render();
 }
 
+function openDuplicateSessionForm(session) {
+  openEditSessionForm(session);
+  const f = state.sessionForm;
+  f.editingId = null; f.title = (session.title || "") + " (copie)"; f.status = "prevue"; f.report = "";
+  const d = new Date(session.starts_at); d.setDate(d.getDate() + 7);
+  f.startsAt = toDatetimeLocalValue(d.toISOString());
+  if (session.ends_at) { const e = new Date(session.ends_at); e.setDate(e.getDate() + 7); f.endsAt = toDatetimeLocalValue(e.toISOString()); }
+  render();
+  try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch (e) {}
+}
 async function submitSessionForm() {
   const f = state.sessionForm;
   f.error = null;
@@ -2944,6 +2961,8 @@ function render() {
   else if (state.view === "personnelManagement") appDiv.appendChild(renderPersonnelManagement());
   else if (state.view === "formateur") appDiv.appendChild(renderFormateur());
   else if (state.view === "suiviPedago") appDiv.appendChild(renderSuiviPedago());
+  else if (state.view === "groups") appDiv.appendChild(renderGroups());
+  else if (state.view === "bilans") appDiv.appendChild(renderBilans());
   else if (state.view === "personFile") appDiv.appendChild(renderPersonFile());
   else if (state.view === "documents") appDiv.appendChild(renderDocuments());
   else if (state.view === "admin") appDiv.appendChild(renderAdmin());
@@ -3015,6 +3034,7 @@ function buildStaffNav(aside, navMain) {
 
   // Apprenants
   add(g("navApp"), ["personnelManagement", "personFile"], "users", "Liste et fiches", goToPersonnelManagement);
+  add(g("navApp"), ["groups"], "users", "Groupes", goToGroups);
   add(g("navApp"), ["trainingOverview"], "cap", "Formation initiale", goToTrainingOverview);
   add(g("navApp"), ["fmaOverview"], "calendar", "Recyclage (FMA)", goToFmaOverview);
   add(g("navApp"), ["selfStudyTrack"], "book", "Suivi auto-formation", goToSelfStudyTrack);
@@ -3027,6 +3047,7 @@ function buildStaffNav(aside, navMain) {
   add(g("navCont"), ["documents"], "folder", "Documents", goToDocuments);
   // Rapports
   add(g("navRap"), ["suiviPedago"], "users", "Suivi pédagogique", goToSuiviPedago);
+  add(g("navRap"), ["bilans"], "clipboard", "Bilans et exports", () => goToBilans());
   add(g("navRap"), ["formateur"], "chart", "Statistiques", goToFormateur);
   // Échanges
   add(g("navEch"), ["messages"], "mail", "Messagerie", () => goToMessages(), MSG.unread || 0);
@@ -3723,8 +3744,8 @@ function renderRecycleAlertsCard(alertSteps) {
 }
 
 /* ---------- Fiche individuelle ---------- */
-async function goToPersonFile(id) {
-  EXTRAS.person = { id, loading: true };
+async function goToPersonFile(id, from, tab) {
+  EXTRAS.person = { id, from: from || "suivi", tab: tab || "prog", loading: true };
   state.view = "personFile";
   render();
   const t = state.auth.token;
@@ -3732,27 +3753,31 @@ async function goToPersonFile(id) {
     rpc("app_formateur_person_file", { p_token: t, p_account: id }),
     rpc("app_list_secouristes", { p_token: t }),
     rpc("app_formateur_training_overview", { p_token: t }),
-    rpc("app_formateur_fma_overview", { p_token: t })
+    rpc("app_formateur_fma_overview", { p_token: t }),
+    loadGroups(false)
   ]);
   if (pf && !pf.error && r1 && r1.secouristes) {
     state.suiviPedago = { secouristes: r1.secouristes, overview: (r2 && r2.structure) ? r2 : null, fma: (r3 && r3.structure) ? r3 : null, alerts: (state.suiviPedago && state.suiviPedago.alerts) || [] };
-    EXTRAS.person = { id, data: pf };
-  } else EXTRAS.person = { id, error: true };
+    EXTRAS.person = { id, from: from || "suivi", tab: tab || "prog", data: pf };
+  } else EXTRAS.person = { id, from: from || "suivi", error: true };
   render();
 }
 function renderPersonFile() {
   const container = el(`<div class="staff-wide"></div>`);
-  const back = el(`<button class="btn secondary" style="margin-bottom:12px;">← Retour au suivi pédagogique</button>`);
-  back.onclick = goToSuiviPedago;
-  container.appendChild(back);
   const p = EXTRAS.person;
+  const BACKS = { personnel: ["← Retour à la liste des apprenants", goToPersonnelManagement], groups: ["← Retour aux groupes", goToGroups], bilans: ["← Retour aux bilans", () => goToBilans(BIL.group)] };
+  const bk = (p && BACKS[p.from]) || ["← Retour au suivi pédagogique", goToSuiviPedago];
+  const back = el(`<button class="btn secondary" style="margin-bottom:12px;">${bk[0]}</button>`);
+  back.onclick = bk[1];
+  container.appendChild(back);
   if (!p || p.loading) { container.appendChild(el(`<div class="card"><div class="empty-state">Chargement de la fiche…</div></div>`)); return container; }
   const sp = state.suiviPedago;
   const row = p.data && sp && sp.secouristes ? computeSuiviRows(sp).find(r => r.id === p.id) : null;
   if (p.error || !row) { container.appendChild(el(`<div class="card"><div class="empty-state">Impossible de charger cette fiche.</div></div>`)); return container; }
   const d = p.data;
   const displayName = row.full_name || row.email || "";
-  container.appendChild(el(`<div class="pf-head"><div class="pf-avatar">${esc(initialsOf(displayName))}</div><div><div class="pf-name">${esc(displayName)}</div><div class="pf-sub">${esc(row.email || "")} · <span class="tag tag-blue">${esc(niveauShortLabel(row.niveau))}</span></div></div></div>`));
+  container.appendChild(el(`<div class="pf-head"><div class="pf-avatar">${esc(initialsOf(displayName))}</div><div><div class="pf-name">${esc(displayName)}${row.disabled ? ' <span class="pill warn">compte désactivé</span>' : ""}</div><div class="pf-sub">${esc(row.email || "")} · <span class="tag tag-blue">${esc(niveauShortLabel(row.niveau))}</span></div></div></div>`));
+  container.appendChild(renderPersonGroupsBar(row));
   const bars = (v) => v == null ? "–" : v + " %";
   const pctCls = (v) => v == null ? "" : (v >= 80 ? "good" : (v < 50 ? "warn" : ""));
   const activeDays = (d.days || []).filter(x => x >= localISO(new Date(Date.now() - 29 * 86400000))).length;
@@ -3766,9 +3791,23 @@ function renderPersonFile() {
   const acts = el(`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;"></div>`);
   const b1 = el(`<button class="btn">Formation initiale / FMA</button>`); b1.onclick = () => goToLearnerTraining(row.id);
   const b2 = el(`<button class="btn secondary">Parcours</button>`); b2.onclick = () => goToLearnerParcours(row.id);
-  acts.appendChild(b1); acts.appendChild(b2); container.appendChild(acts);
+  const b3 = el(`<button class="btn secondary">Imprimer le bilan</button>`); b3.onclick = () => printLearnerReport(row, d);
+  acts.appendChild(b1); acts.appendChild(b2); acts.appendChild(b3); container.appendChild(acts);
   if (row.flags.length) container.appendChild(el(`<div class="card accent-coral" style="margin-top:16px;"><h3 style="margin:0 0 8px;">Points d'attention</h3><div class="tagset">${row.flags.map(f => `<span class="pill warn">${esc(f.t)}</span>`).join("")}</div></div>`));
 
+  const tabBar = el(`<div class="qtab-bar" style="margin-top:16px;"></div>`);
+  [["prog", "Progression"], ["trn", "Entraînements"], ["notes", "Notes privées"], ["msg", "Messages"]].forEach(([id, label]) => {
+    const tb = el(`<button class="qtab ${p.tab === id ? "active" : ""}">${label}</button>`);
+    tb.onclick = () => { p.tab = id; render(); };
+    tabBar.appendChild(tb);
+  });
+  container.appendChild(tabBar);
+  if (p.tab && p.tab !== "prog") {
+    const tabBox = el(`<div style="margin-top:12px;"></div>`);
+    renderPersonTab(tabBox, p.tab, row, d, p);
+    container.appendChild(tabBox);
+    return container;
+  }
   const cols = el(`<div class="home-cols staff" style="margin-top:16px;"></div>`);
   const left = el(`<div class="col"></div>`), right = el(`<div class="col"></div>`);
 
@@ -3779,12 +3818,6 @@ function renderPersonFile() {
   th.forEach(w => tc.appendChild(el(`<div class="theme-row"><span class="name">${esc(themeLabel(w.id))} <span style="font-size:11px;color:var(--text-muted);">· ${w.total} réponses</span></span><span class="bar-outer"><span class="bar-inner ${progressBarClass(w.pct)}" style="width:${w.pct}%"></span></span><span class="pct">${w.pct}%</span></div>`)));
   left.appendChild(tc);
 
-  // Présence
-  const att = d.attendance || [];
-  const ac = el(`<div class="card accent-teal"><div class="mod-head"><h3>Présence aux entraînements</h3><span class="pill">${att.length}</span></div></div>`);
-  if (!att.length) ac.appendChild(el(`<div class="help">Aucune présence enregistrée.</div>`));
-  att.slice(0, 15).forEach(a => ac.appendChild(el(`<div class="pf-row">${fmtDateFR(a.starts_at)} — ${esc(a.title)} <span class="tag">${esc(a.fonction || "")}</span></div>`)));
-  left.appendChild(ac);
 
   // Parcours
   const steps = d.steps || [];
@@ -3803,6 +3836,7 @@ function renderPersonFile() {
 async function openAttendance(s) {
   EXTRAS.att = { session: s, loading: true };
   render();
+  await loadGroups(false);
   const r = await rpc("app_session_attendance_get_v2", { p_token: state.auth.token, p_session: s.id });
   if (r && Array.isArray(r.learners)) {
     const statuses = {};
@@ -3864,6 +3898,13 @@ function renderAttendancePanel() {
     const search = el(`<input type="text" placeholder="Rechercher un nom" style="width:100%;margin-bottom:8px;padding:9px 12px;font-size:14px;border-radius:8px;border:1px solid var(--border);background:var(--surface-1);font-family:inherit;">`);
     const allPresent = el(`<button class="btn secondary" style="font-size:12px;padding:5px 10px;margin-bottom:8px;">Marquer présents les non pointés</button>`);
     allPresent.onclick = () => { att.learners.forEach(l => { if (!att.statuses[l.id]) att.statuses[l.id] = "present"; }); paint(); };
+    const everyone = el(`<button class="btn secondary" style="font-size:12px;padding:5px 10px;margin-bottom:8px;margin-left:6px;">Tout le monde présent</button>`);
+    everyone.onclick = () => { att.learners.forEach(l => { att.statuses[l.id] = "present"; }); paint(); };
+    let grpSel = null;
+    if (activeGroups().length) {
+      grpSel = el(`<select class="mini" style="margin-left:6px;margin-bottom:8px;"><option value="">Présents : membres d'un groupe…</option>${activeGroups().map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join("")}</select>`);
+      grpSel.onchange = () => { const g = groupById(grpSel.value); if (g) { att.learners.forEach(l => { if (g.members.indexOf(l.id) !== -1) att.statuses[l.id] = "present"; }); paint(); } grpSel.value = ""; };
+    }
     const list = el(`<div style="max-height:360px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:4px 10px;"></div>`);
     att.learners.forEach(l => {
       const row = el(`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="flex:1;min-width:150px;">${esc(l.full_name || "")}</span><span class="tag">${esc(l.niveau || "")}</span></div>`);
@@ -3880,11 +3921,11 @@ function renderAttendancePanel() {
     });
     search.oninput = () => { const q = search.value.trim().toLowerCase(); list.querySelectorAll("[data-name]").forEach(r => { r.style.display = (!q || r.dataset.name.includes(q)) ? "" : "none"; }); };
     paint();
-    card.appendChild(count); card.appendChild(search); card.appendChild(allPresent); card.appendChild(list);
+    card.appendChild(count); card.appendChild(search); card.appendChild(allPresent); card.appendChild(everyone); if (grpSel) card.appendChild(grpSel); card.appendChild(list);
     const msg = el(`<div class="mini-help" style="margin-top:6px;"></div>`);
     const doneWrap = el(`<div style="margin-top:8px;"></div>`);
     const save = el(`<button class="btn" style="margin-top:10px;">Enregistrer la présence</button>`);
-    save.onclick = async () => {
+    const doSave = async (closeAfter) => {
       const payload = {};
       att.learners.forEach(l => { if (att.statuses[l.id]) payload[l.id] = att.statuses[l.id]; });
       const n = Object.keys(payload).length;
@@ -3894,6 +3935,11 @@ function renderAttendancePanel() {
       save.disabled = false;
       if (!r || !r.ok) { msg.textContent = "Enregistrement impossible pour le moment."; return; }
       msg.textContent = "Présence enregistrée (" + n + " pointé(s)).";
+      if (closeAfter && att.session.status !== "realisee") {
+        const okDone = await markSessionDone(att.session);
+        if (okDone) { render(); return; }
+        msg.textContent += " Le statut de la séance n'a pas pu être modifié.";
+      }
       doneWrap.innerHTML = "";
       if (att.session.status !== "realisee") {
         const done = el(`<button class="btn secondary" style="font-size:12.5px;">Marquer la séance « Réalisée »</button>`);
@@ -3906,9 +3952,12 @@ function renderAttendancePanel() {
         doneWrap.appendChild(done);
       }
     };
+    save.onclick = () => doSave(false);
+    const saveClose = el(`<button class="btn" style="margin-top:10px;margin-left:8px;">Enregistrer et clôturer</button>`);
+    saveClose.onclick = () => doSave(true);
     const pr = el(`<button class="btn secondary" style="margin-top:10px;margin-left:8px;">Imprimer la feuille</button>`);
     pr.onclick = () => printAttendanceSheet(att);
-    card.appendChild(save); card.appendChild(pr); card.appendChild(msg); card.appendChild(doneWrap);
+    card.appendChild(save); if (att.session.status !== "realisee") card.appendChild(saveClose); card.appendChild(pr); card.appendChild(msg); card.appendChild(doneWrap);
   }
   const close = el(`<button class="btn secondary" style="margin-top:10px;">Fermer</button>`);
   close.onclick = () => { EXTRAS.att = null; render(); };
@@ -4495,7 +4544,526 @@ function renderMyProfile() {
 /* ============================================================
    GESTION DU PERSONNEL — rendu (29/08/2026, ouverte au formateur)
    ============================================================ */
-const PERS_UI = { q: "", niveau: "all" };
+const PERS_UI = { q: "", niveau: "all", group: "all", showDisabled: false };
+
+/* ============================================================
+   LOT 2 (26/11/2026) — groupes / promotions, actions en masse, comptes apprenants créés par le
+   formateur, notes privées, bilans. Voir claude/journal-evolutions-26-11-2026.md.
+   Côté serveur : tables learner_groups / learner_group_members / learner_notes et RPC app_group_*,
+   app_bulk_*, app_staff_create_learner, app_learner_note_*.
+   ============================================================ */
+const GRP = { groups: null, selected: null, sel: new Set(), showArchived: false, form: null, create: null, bulkMsg: null, picker: null, flash: null };
+const GRP_ERR = {
+  name_exists: "Un groupe actif porte déjà ce nom.", invalid_name: "Nom invalide (1 à 80 caractères).",
+  forbidden: "Action non autorisée pour votre rôle.", not_found: "Élément introuvable.",
+  email_exists: "Cette adresse e-mail est déjà utilisée.", invalid_email: "Adresse e-mail invalide.",
+  invalid_password: "Mot de passe trop court (8 caractères minimum).", invalid_niveau: "Fonction invalide.",
+  group_not_found: "Groupe introuvable ou archivé.", invalid_selection: "Sélection vide ou trop grande (500 maximum).",
+  too_many: "Trop d'éléments à la fois.", invalid_session: "Session expirée : reconnectez-vous."
+};
+function grpErr(r, fb) { return (r && GRP_ERR[r.error]) || (r && r.message) || fb || "Action impossible pour le moment."; }
+async function loadGroups(force) {
+  if (!force && Array.isArray(GRP.groups)) return;
+  const r = await rpc("app_group_list", { p_token: state.auth.token });
+  GRP.groups = r && Array.isArray(r.groups) ? r.groups : [];
+}
+function activeGroups() { return (GRP.groups || []).filter(g => !g.archived); }
+function groupById(id) { return (GRP.groups || []).find(g => g.id === id) || null; }
+function groupsOf(accountId) { return activeGroups().filter(g => g.members.indexOf(accountId) !== -1); }
+function learnersList() { return Array.isArray(state.secouristes) ? state.secouristes : []; }
+async function refreshLearners() {
+  const results = await Promise.all([rpc("app_list_secouristes", { p_token: state.auth.token }), loadGroups(true)]);
+  const r = results[0];
+  if (r && r.secouristes) { state.secouristes = r.secouristes; if (r.formateur_code) state.formateurCode = r.formateur_code; }
+  else if (!Array.isArray(state.secouristes)) state.secouristes = { error: true };
+}
+function flash(text, kind) { GRP.flash = { text, kind: kind || "ok" }; render(); }
+function renderFlash() {
+  if (!GRP.flash) return document.createDocumentFragment();
+  const f = GRP.flash;
+  const b = el(`<div class="card" style="margin-bottom:12px;border-left:4px solid ${f.kind === "err" ? "var(--critical)" : "var(--good)"};display:flex;justify-content:space-between;gap:10px;align-items:center;"><span style="font-size:13.5px;">${esc(f.text)}</span></div>`);
+  const x = el(`<button class="btn secondary" style="font-size:12px;padding:4px 10px;">OK</button>`);
+  x.onclick = () => { GRP.flash = null; render(); };
+  b.appendChild(x);
+  return b;
+}
+function genPassword() {
+  const A = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const a = new Uint32Array(10); crypto.getRandomValues(a);
+  return Array.from(a, v => A[v % A.length]).join("");
+}
+
+/* ---------- Actions en masse ---------- */
+async function bulkSetNiveau(ids, niveau) {
+  if (!ids.length) return;
+  if (!confirm("Passer " + ids.length + " compte(s) en « " + niveauShortLabel(niveau) + " » ? Leur accès aux contenus change immédiatement.")) { render(); return; }
+  const r = await rpc("app_bulk_set_niveau", { p_token: state.auth.token, p_ids: ids, p_niveau: niveau });
+  if (!r || !r.ok) { flash(grpErr(r), "err"); return; }
+  await refreshLearners(); GRP.sel.clear();
+  flash(r.updated + " compte(s) passé(s) en « " + niveauShortLabel(niveau) + " ».");
+}
+async function bulkSetDisabled(ids, disabled) {
+  if (!ids.length) return;
+  const msg = disabled
+    ? "Désactiver " + ids.length + " compte(s) ? Ils seront déconnectés et ne pourront plus se connecter. Leurs données sont conservées et vous pourrez les réactiver ici même."
+    : "Réactiver " + ids.length + " compte(s) ?";
+  if (!confirm(msg)) return;
+  const r = await rpc("app_bulk_set_disabled", { p_token: state.auth.token, p_ids: ids, p_disabled: disabled });
+  if (!r || !r.ok) { flash(grpErr(r), "err"); return; }
+  await refreshLearners(); GRP.sel.clear();
+  flash(r.updated + " compte(s) " + (disabled ? "désactivé(s)" : "réactivé(s)") + ".");
+}
+async function bulkSetGroup(ids, gid, add) {
+  if (!ids.length || !gid) return;
+  const r = await rpc("app_group_set_members", { p_token: state.auth.token, p_id: gid, p_add: add ? ids : [], p_remove: add ? [] : ids });
+  if (!r || !r.ok) { flash(grpErr(r), "err"); return; }
+  await loadGroups(true);
+  const g = groupById(gid);
+  flash(add ? (r.added + " apprenant(s) ajouté(s) au groupe « " + (g ? g.name : "") + " ».") : (r.removed + " apprenant(s) retiré(s) du groupe."));
+}
+function openBulkMessage(ids) { GRP.bulkMsg = { ids: ids.slice(), body: "", busy: false, result: null }; render(); }
+async function sendBulkMessage() {
+  const m = GRP.bulkMsg; if (!m) return;
+  const body = (m.body || "").trim();
+  if (!body) { m.result = "Écrivez un message."; render(); return; }
+  if (m.ids.length > 50) { m.result = "50 destinataires au maximum par envoi."; render(); return; }
+  if (!confirm("Envoyer ce message à " + m.ids.length + " personne(s) ? Chacune le recevra dans une conversation individuelle.")) return;
+  m.busy = true; m.result = null; render();
+  let ok = 0, ko = 0;
+  for (const id of m.ids) {
+    const o = await rpc("app_msg_open", { p_token: state.auth.token, p_other: id });
+    if (!o || !o.ok) { ko++; continue; }
+    const s = await rpc("app_msg_send", { p_token: state.auth.token, p_conv: o.id, p_body: body, p_att: null });
+    if (s && s.ok) ok++; else ko++;
+  }
+  m.busy = false;
+  if (!ko) { GRP.bulkMsg = null; flash(ok + " message(s) envoyé(s)."); }
+  else { m.result = ok + " envoyé(s), " + ko + " échec(s)."; render(); }
+}
+function renderBulkMessageCard() {
+  const m = GRP.bulkMsg;
+  const card = el(`<div class="card accent" style="margin-bottom:12px;"><h3 style="margin:0 0 6px;">Message à ${m.ids.length} personne(s)</h3><div class="help" style="margin-bottom:8px;">Un message individuel est envoyé à chaque destinataire (il ne voit pas les autres).</div></div>`);
+  const ta = el(`<textarea rows="4" placeholder="Votre message" style="width:100%;padding:10px 12px;font-size:14px;border-radius:8px;border:1px solid var(--border);font-family:inherit;resize:vertical;">${esc(m.body)}</textarea>`);
+  ta.oninput = () => { m.body = ta.value; };
+  card.appendChild(ta);
+  if (m.result) card.appendChild(el(`<div class="help" style="margin-top:6px;color:var(--critical);">${esc(m.result)}</div>`));
+  const row = el(`<div style="display:flex;gap:8px;margin-top:10px;"></div>`);
+  const send = el(`<button class="btn" ${m.busy ? "disabled" : ""}>${m.busy ? "Envoi…" : "Envoyer"}</button>`);
+  send.onclick = sendBulkMessage;
+  const cancel = el(`<button class="btn secondary">Annuler</button>`);
+  cancel.onclick = () => { GRP.bulkMsg = null; render(); };
+  row.appendChild(send); row.appendChild(cancel); card.appendChild(row);
+  return card;
+}
+function renderBulkBar(ids, ctx) {
+  const bar = el(`<div class="card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0;background:var(--surface-1);"><b style="font-size:13px;">${ids.length} sélectionné(s)</b></div>`);
+  const niv = el(`<select class="mini"><option value="">Changer la fonction…</option><option value="PSC">Premiers Secours Citoyen</option><option value="PSE1">Secouriste</option><option value="PSE2">Équipier-Secouriste</option></select>`);
+  niv.onchange = () => { if (niv.value) bulkSetNiveau(ids, niv.value); };
+  bar.appendChild(niv);
+  const gs = activeGroups().filter(g => !ctx || g.id !== ctx.groupId);
+  if (gs.length) {
+    const gsel = el(`<select class="mini"><option value="">Ajouter au groupe…</option>${gs.map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join("")}</select>`);
+    gsel.onchange = () => { if (gsel.value) bulkSetGroup(ids, gsel.value, true); };
+    bar.appendChild(gsel);
+  }
+  const mk = (label, fn, extra) => { const b = el(`<button class="btn secondary" style="font-size:12.5px;padding:6px 12px;${extra || ""}">${label}</button>`); b.onclick = fn; bar.appendChild(b); };
+  if (ctx && ctx.groupId) mk("Retirer du groupe", () => { if (confirm("Retirer " + ids.length + " apprenant(s) de ce groupe ? Leurs comptes ne sont pas touchés.")) bulkSetGroup(ids, ctx.groupId, false); });
+  mk("Envoyer un message", () => openBulkMessage(ids));
+  mk("Désactiver", () => bulkSetDisabled(ids, true), "color:var(--critical);");
+  mk("Réactiver", () => bulkSetDisabled(ids, false));
+  mk("Vider la sélection", () => { GRP.sel.clear(); render(); });
+  return bar;
+}
+
+/* ---------- Création d'un compte apprenant par le formateur ---------- */
+function openCreateLearner(groupId) { GRP.create = { name: "", email: "", password: genPassword(), niveau: "PSE1", group: groupId || "", busy: false, error: null, done: null }; render(); }
+async function submitCreateLearner() {
+  const c = GRP.create; if (!c) return;
+  c.error = null;
+  if (!c.name.trim()) { c.error = "Indiquez le nom complet."; render(); return; }
+  if (!c.email.trim()) { c.error = "Indiquez l'adresse e-mail."; render(); return; }
+  c.busy = true; render();
+  const r = await rpc("app_staff_create_learner", { p_token: state.auth.token, p_full_name: c.name, p_email: c.email, p_password: c.password, p_niveau: c.niveau, p_group_id: c.group || null });
+  c.busy = false;
+  if (!r || !r.ok) { c.error = grpErr(r, "Création impossible pour le moment."); render(); return; }
+  c.done = { name: c.name.trim(), email: c.email.trim().toLowerCase(), password: c.password };
+  await refreshLearners();
+  render();
+}
+function renderCreateLearnerCard() {
+  const c = GRP.create;
+  const card = el(`<div class="card accent" style="margin-bottom:12px;"><h3 style="margin:0 0 6px;">Nouveau compte apprenant</h3></div>`);
+  if (c.done) {
+    card.appendChild(el(`<div style="font-size:13.5px;margin-bottom:8px;">Compte créé pour <b>${esc(c.done.name)}</b>. Communiquez-lui ces identifiants (le mot de passe ne sera plus affiché ensuite) :</div>`));
+    card.appendChild(el(`<div style="font-family:monospace;background:var(--surface-1);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13.5px;">E-mail : ${esc(c.done.email)}<br>Mot de passe : ${esc(c.done.password)}</div>`));
+    card.appendChild(el(`<div class="help" style="margin-top:6px;">L'apprenant peut changer son mot de passe depuis « Mon profil ».</div>`));
+    const row = el(`<div style="display:flex;gap:8px;margin-top:10px;"></div>`);
+    const again = el(`<button class="btn">Créer un autre compte</button>`); again.onclick = () => openCreateLearner(c.group);
+    const close = el(`<button class="btn secondary">Fermer</button>`); close.onclick = () => { GRP.create = null; render(); };
+    row.appendChild(again); row.appendChild(close); card.appendChild(row);
+    return card;
+  }
+  const st = "width:100%;margin-bottom:10px;padding:9px 12px;font-size:14px;border-radius:8px;border:1px solid var(--border);background:var(--surface-1);font-family:inherit;";
+  if (c.error) card.appendChild(el(`<div style="color:var(--critical);font-size:13px;margin-bottom:8px;">${esc(c.error)}</div>`));
+  const name = el(`<input type="text" placeholder="Nom complet" style="${st}" value="${esc(c.name)}">`); name.oninput = () => { c.name = name.value; };
+  const email = el(`<input type="email" placeholder="Adresse e-mail" style="${st}" value="${esc(c.email)}">`); email.oninput = () => { c.email = email.value; };
+  const pwRow = el(`<div style="display:flex;gap:8px;margin-bottom:10px;"></div>`);
+  const pw = el(`<input type="text" placeholder="Mot de passe provisoire (8 caractères min.)" style="${st}margin-bottom:0;flex:1;font-family:monospace;" value="${esc(c.password)}">`); pw.oninput = () => { c.password = pw.value; };
+  const gen = el(`<button type="button" class="btn secondary" style="white-space:nowrap;">Générer</button>`); gen.onclick = () => { c.password = genPassword(); render(); };
+  pwRow.appendChild(pw); pwRow.appendChild(gen);
+  const niv = el(`<select style="${st}"><option value="PSC" ${c.niveau === "PSC" ? "selected" : ""}>Premiers Secours Citoyen</option><option value="PSE1" ${c.niveau === "PSE1" ? "selected" : ""}>Secouriste</option><option value="PSE2" ${c.niveau === "PSE2" ? "selected" : ""}>Équipier-Secouriste</option></select>`); niv.onchange = () => { c.niveau = niv.value; };
+  const gr = el(`<select style="${st}"><option value="">Aucun groupe</option>${activeGroups().map(g => `<option value="${esc(g.id)}" ${c.group === g.id ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select>`); gr.onchange = () => { c.group = gr.value; };
+  [name, email, pwRow, niv, gr].forEach(x => card.appendChild(x));
+  const row = el(`<div style="display:flex;gap:8px;"></div>`);
+  const ok = el(`<button class="btn" ${c.busy ? "disabled" : ""}>${c.busy ? "Création…" : "Créer le compte"}</button>`); ok.onclick = submitCreateLearner;
+  const cancel = el(`<button class="btn secondary">Annuler</button>`); cancel.onclick = () => { GRP.create = null; render(); };
+  row.appendChild(ok); row.appendChild(cancel); card.appendChild(row);
+  card.appendChild(el(`<div class="help" style="margin-top:8px;">Le compte est créé avec le rôle « apprenant » uniquement. La création de formateurs reste réservée à l'administrateur.</div>`));
+  return card;
+}
+
+/* ---------- Page Groupes ---------- */
+async function goToGroups() {
+  state.view = "groups"; GRP.flash = null; closeMobileSidebar();
+  render();
+  await refreshLearners();
+  if (GRP.selected && !groupById(GRP.selected)) GRP.selected = null;
+  render();
+}
+function openGroupForm(g) { GRP.form = { id: g ? g.id : null, name: g ? g.name : "", description: g ? (g.description || "") : "", niveau: g ? (g.niveau || "") : "", error: null, busy: false }; render(); }
+async function submitGroupForm() {
+  const f = GRP.form; if (!f) return;
+  if (!f.name.trim()) { f.error = "Indiquez un nom."; render(); return; }
+  f.busy = true; render();
+  const r = await rpc("app_group_save", { p_token: state.auth.token, p_id: f.id, p_name: f.name, p_description: f.description, p_niveau: f.niveau || null });
+  f.busy = false;
+  if (!r || !r.ok) { f.error = grpErr(r); render(); return; }
+  const wasNew = !f.id;
+  GRP.form = null; await loadGroups(true); GRP.selected = r.id;
+  flash(wasNew ? "Groupe créé." : "Groupe modifié.");
+}
+async function archiveGroup(g, archived) {
+  if (archived && !confirm("Archiver le groupe « " + g.name + " » ? Il n'apparaîtra plus dans les listes, ses membres et leurs comptes ne sont pas touchés. Vous pourrez le restaurer.")) return;
+  const r = await rpc("app_group_archive", { p_token: state.auth.token, p_id: g.id, p_archived: archived });
+  if (!r || !r.ok) { flash(grpErr(r), "err"); return; }
+  await loadGroups(true);
+  if (archived && !GRP.showArchived) GRP.selected = null;
+  flash(archived ? "Groupe archivé." : "Groupe restauré.");
+}
+function renderGroupFormCard() {
+  const f = GRP.form;
+  const card = el(`<div class="card accent" style="margin-bottom:12px;"><h3 style="margin:0 0 8px;">${f.id ? "Modifier le groupe" : "Nouveau groupe"}</h3></div>`);
+  const st = "width:100%;margin-bottom:10px;padding:9px 12px;font-size:14px;border-radius:8px;border:1px solid var(--border);background:var(--surface-1);font-family:inherit;";
+  if (f.error) card.appendChild(el(`<div style="color:var(--critical);font-size:13px;margin-bottom:8px;">${esc(f.error)}</div>`));
+  const name = el(`<input type="text" maxlength="80" placeholder="Nom du groupe (ex. PSE1 Dieppe 2026)" style="${st}" value="${esc(f.name)}">`); name.oninput = () => { f.name = name.value; };
+  const desc = el(`<input type="text" placeholder="Description (facultatif)" style="${st}" value="${esc(f.description)}">`); desc.oninput = () => { f.description = desc.value; };
+  const niv = el(`<select style="${st}"><option value="">Fonction visée : non précisée</option><option value="PSC" ${f.niveau === "PSC" ? "selected" : ""}>Premiers Secours Citoyen</option><option value="PSE1" ${f.niveau === "PSE1" ? "selected" : ""}>Secouriste</option><option value="PSE2" ${f.niveau === "PSE2" ? "selected" : ""}>Équipier-Secouriste</option></select>`); niv.onchange = () => { f.niveau = niv.value; };
+  [name, desc, niv].forEach(x => card.appendChild(x));
+  const row = el(`<div style="display:flex;gap:8px;"></div>`);
+  const ok = el(`<button class="btn" ${f.busy ? "disabled" : ""}>${f.busy ? "Enregistrement…" : "Enregistrer"}</button>`); ok.onclick = submitGroupForm;
+  const cancel = el(`<button class="btn secondary">Annuler</button>`); cancel.onclick = () => { GRP.form = null; render(); };
+  row.appendChild(ok); row.appendChild(cancel); card.appendChild(row);
+  return card;
+}
+function renderGroups() {
+  const container = el(`<div class="staff-wide"></div>`);
+  container.appendChild(el(`<div class="page-header">${iconChip("users", { color: "teal" })}<div><div class="page-title">Groupes</div><div class="page-sub">Regroupez vos apprenants par promotion ou par session, puis agissez sur tout un groupe.</div></div></div>`));
+  container.appendChild(renderFlash());
+  if (state.secouristes && state.secouristes.error) {
+    const c = el(`<div class="card"><div class="empty-state">Impossible de charger les groupes pour le moment.</div></div>`);
+    const b = el(`<button class="btn block">Réessayer</button>`); b.onclick = goToGroups; c.appendChild(b); container.appendChild(c); return container;
+  }
+  if (GRP.groups === null || !Array.isArray(state.secouristes)) {
+    container.appendChild(el(`<div class="card"><div class="empty-state">Chargement…</div></div>`));
+    return container;
+  }
+  if (GRP.bulkMsg) container.appendChild(renderBulkMessageCard());
+  const tb = el(`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;"></div>`);
+  const nb = el(`<button class="btn">+ Nouveau groupe</button>`); nb.onclick = () => openGroupForm(null);
+  const na = el(`<button class="btn secondary">+ Compte apprenant</button>`); na.onclick = () => openCreateLearner(GRP.selected);
+  const arch = el(`<label style="font-size:12.5px;display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" ${GRP.showArchived ? "checked" : ""}> Afficher les groupes archivés</label>`);
+  arch.querySelector("input").onchange = (e) => { GRP.showArchived = e.target.checked; render(); };
+  tb.appendChild(nb); tb.appendChild(na); tb.appendChild(arch); container.appendChild(tb);
+  if (GRP.form) container.appendChild(renderGroupFormCard());
+  if (GRP.create) container.appendChild(renderCreateLearnerCard());
+  const groups = GRP.groups.filter(g => GRP.showArchived || !g.archived);
+  if (!groups.length) {
+    container.appendChild(el(`<div class="card"><div class="empty-state">Aucun groupe pour le moment. Créez-en un (ex. « PSE1 Dieppe 2026 »), puis ajoutez-y vos apprenants.</div></div>`));
+    return container;
+  }
+  const grid = el(`<div class="tool-grid"></div>`);
+  groups.forEach(g => {
+    const n = g.members.length;
+    const card = el(`<button type="button" class="tool-card" style="${GRP.selected === g.id ? "outline:2px solid var(--blue);" : ""}">${iconChip("users", { color: g.archived ? "" : "teal" })}<span><div class="tt">${esc(g.name)}</div><div class="ts">${n} apprenant${n > 1 ? "s" : ""}${g.niveau ? " · " + esc(niveauShortLabel(g.niveau)) : ""}${g.archived ? " · archivé" : ""}</div></span></button>`);
+    card.onclick = () => { GRP.selected = (GRP.selected === g.id ? null : g.id); GRP.sel.clear(); GRP.picker = null; render(); };
+    grid.appendChild(card);
+  });
+  container.appendChild(grid);
+  const g = GRP.selected ? groupById(GRP.selected) : null;
+  if (g) container.appendChild(renderGroupDetail(g));
+  return container;
+}
+function renderGroupDetail(g) {
+  const members = learnersList().filter(l => g.members.indexOf(l.id) !== -1);
+  const card = el(`<div class="card" style="margin-top:16px;"></div>`);
+  const head = el(`<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start;"><div><h3 style="margin:0;">${esc(g.name)}${g.archived ? ' <span class="pill">archivé</span>' : ""}</h3>${g.description ? `<div class="help">${esc(g.description)}</div>` : ""}</div></div>`);
+  const acts = el(`<span style="display:flex;gap:8px;flex-wrap:wrap;"></div>`);
+  const mk = (label, fn, cls) => { const b = el(`<button class="btn ${cls || "secondary"}" style="font-size:12.5px;padding:6px 12px;">${label}</button>`); b.onclick = fn; acts.appendChild(b); };
+  mk("Modifier", () => openGroupForm(g));
+  mk("Bilan du groupe", () => goToBilans(g.id));
+  mk(g.archived ? "Restaurer" : "Archiver", () => archiveGroup(g, !g.archived));
+  if (!g.archived) mk("+ Ajouter des apprenants", () => { GRP.picker = GRP.picker ? null : { q: "", sel: new Set() }; render(); }, "");
+  head.appendChild(acts); card.appendChild(head);
+  if (GRP.picker && !g.archived) card.appendChild(renderGroupPicker(g));
+  const ids = members.filter(m => GRP.sel.has(m.id)).map(m => m.id);
+  if (ids.length) card.appendChild(renderBulkBar(ids, { groupId: g.id }));
+  if (!members.length) { card.appendChild(el(`<div class="empty-state" style="margin-top:10px;">Ce groupe est vide.</div>`)); return card; }
+  const wrap = el(`<div class="stats-table-wrap" style="margin-top:10px;"><table class="stats-table"><thead><tr><th style="width:34px;"></th><th>Apprenant</th><th>Fonction</th><th>Réponses</th><th>Réussite</th><th>Dernière activité</th></tr></thead><tbody></tbody></table></div>`);
+  const allCb = el(`<input type="checkbox" ${ids.length === members.length ? "checked" : ""}>`);
+  allCb.onchange = () => { members.forEach(m => allCb.checked ? GRP.sel.add(m.id) : GRP.sel.delete(m.id)); render(); };
+  wrap.querySelector("th").appendChild(allCb);
+  const tbody = wrap.querySelector("tbody");
+  members.forEach(m => {
+    const pct = m.total ? Math.round(m.correct / m.total * 100) + " %" : "–";
+    const row = elRow(`<tr class="stats-row"></tr>`);
+    const cbTd = elCell(`<td></td>`); const cb = el(`<input type="checkbox" ${GRP.sel.has(m.id) ? "checked" : ""}>`);
+    cb.onchange = () => { cb.checked ? GRP.sel.add(m.id) : GRP.sel.delete(m.id); render(); };
+    cbTd.appendChild(cb); row.appendChild(cbTd);
+    const nameTd = elCell(`<td><div class="who-cell" style="cursor:pointer;"><div class="name">${esc(m.full_name || m.email)}${m.disabled ? ' <span class="pill warn">désactivé</span>' : ""}</div><div class="email">${esc(m.email || "")}</div></div></td>`);
+    nameTd.querySelector(".who-cell").onclick = () => goToPersonFile(m.id, "groups");
+    row.appendChild(nameTd);
+    row.appendChild(elCell(`<td>${esc(niveauShortLabel(m.niveau))}</td>`));
+    row.appendChild(elCell(`<td>${m.total || 0}</td>`));
+    row.appendChild(elCell(`<td>${pct}</td>`));
+    row.appendChild(elCell(`<td>${m.last_activity ? fmtDateFR(m.last_activity) : "–"}</td>`));
+    tbody.appendChild(row);
+  });
+  card.appendChild(wrap);
+  return card;
+}
+function renderGroupPicker(g) {
+  const p = GRP.picker;
+  const box = el(`<div class="card" style="margin-top:12px;background:var(--surface-1);"><h3 style="margin:0 0 6px;font-size:14px;">Ajouter des apprenants à « ${esc(g.name)} »</h3></div>`);
+  const search = el(`<input type="text" placeholder="Rechercher un nom ou un e-mail" value="${esc(p.q)}" style="width:100%;margin-bottom:8px;padding:8px 10px;font-size:13.5px;border-radius:8px;border:1px solid var(--border);font-family:inherit;">`);
+  const list = el(`<div style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:4px 10px;"></div>`);
+  const addBtn = el(`<button class="btn" style="margin-top:10px;"></button>`);
+  const paint = () => {
+    list.innerHTML = "";
+    const q = p.q.trim().toLowerCase();
+    const cands = learnersList().filter(l => !l.disabled && g.members.indexOf(l.id) === -1 && (!q || ((l.full_name || "") + " " + (l.email || "")).toLowerCase().includes(q)));
+    if (!cands.length) list.appendChild(el(`<div class="help" style="padding:8px 0;">Aucun apprenant à ajouter.</div>`));
+    cands.forEach(l => {
+      const row = el(`<label style="display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:13.5px;cursor:pointer;"><input type="checkbox" ${p.sel.has(l.id) ? "checked" : ""}><span style="flex:1;">${esc(l.full_name || l.email)} <span class="help">· ${esc(niveauShortLabel(l.niveau))}</span></span></label>`);
+      row.querySelector("input").onchange = (e) => { e.target.checked ? p.sel.add(l.id) : p.sel.delete(l.id); addBtn.textContent = "Ajouter (" + p.sel.size + ")"; addBtn.disabled = !p.sel.size; };
+      list.appendChild(row);
+    });
+    addBtn.textContent = "Ajouter (" + p.sel.size + ")"; addBtn.disabled = !p.sel.size;
+  };
+  search.oninput = () => { p.q = search.value; paint(); };
+  addBtn.onclick = async () => { const ids = Array.from(p.sel); GRP.picker = null; await bulkSetGroup(ids, g.id, true); };
+  box.appendChild(search); box.appendChild(list); box.appendChild(addBtn); paint();
+  return box;
+}
+
+/* ---------- Fiche apprenant : onglets, groupes, notes, messages ---------- */
+async function groupMemberChange(gid, accountId, add) {
+  const r = await rpc("app_group_set_members", { p_token: state.auth.token, p_id: gid, p_add: add ? [accountId] : [], p_remove: add ? [] : [accountId] });
+  if (!r || !r.ok) { alert(grpErr(r)); return; }
+  await loadGroups(true); render();
+}
+function renderPersonGroupsBar(row) {
+  const wrap = el(`<div class="card" style="margin:12px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><b style="font-size:12.5px;">Groupes :</b></div>`);
+  const mine = groupsOf(row.id);
+  if (!mine.length) wrap.appendChild(el(`<span class="help">aucun</span>`));
+  mine.forEach(g => {
+    const chip = el(`<span class="pill" style="display:inline-flex;align-items:center;gap:6px;">${esc(g.name)} <a style="cursor:pointer;font-weight:700;" title="Retirer du groupe">×</a></span>`);
+    chip.querySelector("a").onclick = () => { if (confirm("Retirer cet apprenant du groupe « " + g.name + " » ?")) groupMemberChange(g.id, row.id, false); };
+    wrap.appendChild(chip);
+  });
+  const rest = activeGroups().filter(g => g.members.indexOf(row.id) === -1);
+  if (rest.length) {
+    const sel = el(`<select class="mini"><option value="">+ Ajouter à un groupe…</option>${rest.map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join("")}</select>`);
+    sel.onchange = () => { if (sel.value) groupMemberChange(sel.value, row.id, true); };
+    wrap.appendChild(sel);
+  }
+  return wrap;
+}
+async function loadPersonNotes(p) {
+  p.notes = "loading"; render();
+  const r = await rpc("app_learner_note_list", { p_token: state.auth.token, p_account: p.id });
+  p.notes = r && Array.isArray(r.notes) ? r.notes : { error: true };
+  render();
+}
+async function openConversationWith(id) {
+  const r = await rpc("app_msg_open", { p_token: state.auth.token, p_other: id });
+  if (!r || !r.ok) { alert("Impossible d'ouvrir la conversation."); return; }
+  goToMessages(r.id);
+}
+function renderPersonTab(container, tab, row, d, p) {
+  const name = row.full_name || row.email || "";
+  if (tab === "trn") {
+    const att = d.attendance || [];
+    const c = el(`<div class="card accent-teal"><div class="mod-head"><h3>Présence aux entraînements</h3><span class="pill">${att.length}</span></div></div>`);
+    if (!att.length) c.appendChild(el(`<div class="help">Aucune présence enregistrée.</div>`));
+    att.slice(0, 60).forEach(a => c.appendChild(el(`<div class="pf-row">${fmtDateFR(a.starts_at)} — ${esc(a.title)} <span class="tag">${esc(a.fonction || "")}</span></div>`)));
+    if (att.length > 60) c.appendChild(el(`<div class="help" style="margin-top:6px;">… et ${att.length - 60} autre(s) plus ancienne(s).</div>`));
+    const b = el(`<button class="btn secondary" style="margin-top:10px;">Assiduité et heures de tous les apprenants</button>`); b.onclick = goToTrainingStats;
+    c.appendChild(b); container.appendChild(c);
+  } else if (tab === "notes") {
+    const c = el(`<div class="card accent-indigo"><div class="mod-head"><h3>Notes privées</h3></div><div class="help" style="margin-bottom:8px;">Visibles uniquement par les formateurs et administrateurs, jamais par l'apprenant.</div></div>`);
+    const ta = el(`<textarea rows="3" maxlength="2000" placeholder="Ajouter une note sur ${esc(name)}…" style="width:100%;padding:10px 12px;font-size:14px;border-radius:8px;border:1px solid var(--border);font-family:inherit;resize:vertical;">${esc(p.noteDraft || "")}</textarea>`);
+    ta.oninput = () => { p.noteDraft = ta.value; };
+    const add = el(`<button class="btn" style="margin-top:8px;">Ajouter la note</button>`);
+    add.onclick = async () => {
+      const body = (p.noteDraft || "").trim();
+      if (!body) return;
+      add.disabled = true;
+      const r = await rpc("app_learner_note_add", { p_token: state.auth.token, p_account: p.id, p_body: body });
+      if (!r || !r.ok) { alert(grpErr(r, "Note non enregistrée.")); add.disabled = false; return; }
+      p.noteDraft = ""; loadPersonNotes(p);
+    };
+    c.appendChild(ta); c.appendChild(add);
+    if (p.notes === undefined) { loadPersonNotes(p); }
+    if (p.notes === "loading" || p.notes === undefined) c.appendChild(el(`<div class="help" style="margin-top:10px;">Chargement…</div>`));
+    else if (p.notes.error) c.appendChild(el(`<div class="help" style="margin-top:10px;">Impossible de charger les notes.</div>`));
+    else if (!p.notes.length) c.appendChild(el(`<div class="help" style="margin-top:10px;">Aucune note.</div>`));
+    else p.notes.forEach(n => {
+      const r = el(`<div style="padding:10px 0;border-top:1px solid var(--border);"><div class="help">${fmtDateFR(n.created_at)} · ${esc(n.author || "")}</div><div style="font-size:13.5px;white-space:pre-wrap;margin-top:2px;">${esc(n.body)}</div></div>`);
+      const rm = el(`<button class="btn secondary" style="font-size:11.5px;padding:3px 9px;margin-top:6px;">Retirer</button>`);
+      rm.onclick = async () => {
+        if (!confirm("Retirer cette note de la fiche ?")) return;
+        const rr = await rpc("app_learner_note_archive", { p_token: state.auth.token, p_id: n.id });
+        if (!rr || !rr.ok) { alert("Vous ne pouvez retirer que vos propres notes (l'administrateur peut retirer toutes les notes)."); return; }
+        loadPersonNotes(p);
+      };
+      r.appendChild(rm); c.appendChild(r);
+    });
+    container.appendChild(c);
+  } else if (tab === "msg") {
+    const c = el(`<div class="card accent-teal"><div class="mod-head"><h3>Messagerie</h3></div><div class="help" style="margin-bottom:10px;">Conversation individuelle avec ${esc(name)}.</div></div>`);
+    const b = el(`<button class="btn">Ouvrir la conversation</button>`); b.onclick = () => openConversationWith(row.id);
+    c.appendChild(b); container.appendChild(c);
+  }
+}
+function printLearnerReport(row, d) {
+  const th = (d.by_theme || []).filter(t => t.total >= 1).map(t => ({ id: t.theme, pct: Math.round(t.correct / t.total * 100), total: t.total })).sort((a, b) => a.pct - b.pct);
+  const att = d.attendance || [];
+  const steps = d.steps || [];
+  const pc = (v) => v == null ? "–" : v + " %";
+  const html = "<h1>Bilan individuel — " + esc(row.full_name || row.email) + "</h1><div class='sub'>" + esc(niveauShortLabel(row.niveau)) + " · édité le " + new Date().toLocaleDateString("fr-FR") + " · MyPSE / Vitalform76</div>"
+    + "<div><span class='kpi'><b>" + (row.total || 0) + "</b>réponses</span><span class='kpi'><b>" + pc(row.pct) + "</b>réussite</span><span class='kpi'><b>" + pc(row.fiPct) + "</b>formation initiale</span><span class='kpi'><b>" + pc(row.fmaPct) + "</b>recyclage (FMA)</span></div>"
+    + "<p class='sub'>Dernière activité : " + (row.last_activity ? fmtDateFR(row.last_activity) : "aucune") + (row.flags.length ? " · Points d'attention : " + esc(row.flags.map(f => f.t).join(" ; ")) : "") + "</p>"
+    + "<h2>Thèmes (du plus faible au plus solide)</h2>" + (th.length ? "<table><tr><th>Thème</th><th>Réponses</th><th>Réussite</th></tr>" + th.map(t => "<tr><td>" + esc(themeLabel(t.id)) + "</td><td>" + t.total + "</td><td>" + t.pct + " %</td></tr>").join("") + "</table>" : "<p class='sub'>Pas encore de réponses.</p>")
+    + "<h2>Présence aux entraînements (" + att.length + ")</h2>" + (att.length ? "<table><tr><th>Date</th><th>Séance</th><th>Fonction</th></tr>" + att.slice(0, 40).map(a => "<tr><td>" + fmtDateFR(a.starts_at) + "</td><td>" + esc(a.title) + "</td><td>" + esc(a.fonction || "") + "</td></tr>").join("") + "</table>" : "<p class='sub'>Aucune présence enregistrée.</p>")
+    + "<h2>Parcours (" + steps.length + ")</h2>" + (steps.length ? "<table><tr><th>Étape</th><th>Niveau</th><th>Statut</th></tr>" + steps.map(s => "<tr><td>" + esc(s.label) + "</td><td>" + esc(s.niveau || "") + "</td><td>" + esc(STEP_STATUS_LABELS[s.status] || s.status) + "</td></tr>").join("") + "</table>" : "<p class='sub'>Aucune étape renseignée.</p>");
+  openPrintWindow("Bilan individuel — " + (row.full_name || ""), html);
+}
+
+/* ---------- Bilans et exports ---------- */
+function openPrintWindow(title, bodyHtml) {
+  const w = window.open("", "_blank");
+  if (!w) { alert("Autorisez l'ouverture de fenêtres pour imprimer."); return; }
+  w.document.write("<html><head><meta charset='utf-8'><title>" + esc(title) + "</title><style>body{font-family:Montserrat,Arial,sans-serif;padding:24px;color:#0D1B2A}h1{font-size:18px;margin:0 0 4px}h2{font-size:14px;margin:18px 0 6px}.sub{color:#5a6b7d;font-size:12px;margin:4px 0 12px}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #c9d2dc;padding:6px 8px;text-align:left}th{background:#eef2f6}.kpi{display:inline-block;margin-right:22px;font-size:12px}.kpi b{display:block;font-size:20px}</style></head><body>" + bodyHtml + "</body></html>");
+  w.document.close(); w.focus(); setTimeout(() => w.print(), 300);
+}
+const BIL = { group: "all", data: null, includeDisabled: false };
+async function goToBilans(groupId) {
+  state.view = "bilans"; GRP.flash = null; closeMobileSidebar();
+  BIL.group = groupId || "all"; BIL.data = "loading";
+  render();
+  const t = state.auth.token;
+  const rs = await Promise.all([
+    rpc("app_list_secouristes", { p_token: t }),
+    rpc("app_formateur_training_overview", { p_token: t }),
+    rpc("app_formateur_fma_overview", { p_token: t }),
+    rpc("app_formateur_parcours_alerts", { p_token: t }),
+    loadGroups(true)
+  ]);
+  const r1 = rs[0], r2 = rs[1], r3 = rs[2], r4 = rs[3];
+  BIL.data = (r1 && r1.secouristes)
+    ? { secouristes: r1.secouristes, overview: (r2 && r2.structure) ? r2 : null, fma: (r3 && r3.structure) ? r3 : null, alerts: (r4 && Array.isArray(r4.steps)) ? r4.steps : [] }
+    : { error: true };
+  render();
+}
+function bilanRows() {
+  const g = BIL.group !== "all" ? groupById(BIL.group) : null;
+  return computeSuiviRows(BIL.data).filter(r => (BIL.includeDisabled || !r.disabled) && (!g || g.members.indexOf(r.id) !== -1));
+}
+function bilanLabel() { const g = BIL.group !== "all" ? groupById(BIL.group) : null; return g ? "Groupe « " + g.name + " »" : "Tous les apprenants"; }
+function exportBilanCsv(rows) {
+  const head = ["Nom", "E-mail", "Fonction", "Groupes", "Réponses", "Réussite %", "Dernière activité", "Formation initiale %", "Recyclage FMA %", "Alertes"];
+  const lines = [["Bilan MyPSE", bilanLabel(), new Date().toLocaleDateString("fr-FR")], head].concat(rows.map(r => [
+    r.full_name, r.email, niveauShortLabel(r.niveau), groupsOf(r.id).map(g => g.name).join(" ; "), r.total, r.pct == null ? "" : r.pct,
+    r.last_activity ? new Date(r.last_activity).toLocaleDateString("fr-FR") : "", r.fiPct == null ? "" : r.fiPct, r.fmaPct == null ? "" : r.fmaPct, r.flags.map(f => f.t).join(" ; ")
+  ]));
+  const csv = "﻿" + lines.map(l => l.map(c => '"' + String(c == null ? "" : c).replace(/"/g, '""') + '"').join(";")).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  a.download = "bilan-" + (BIL.group !== "all" ? "groupe-" : "tous-") + new Date().toISOString().slice(0, 10) + ".csv";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function printBilan(rows) {
+  const pc = (v) => v == null ? "–" : v + " %";
+  const tot = rows.reduce((s, r) => s + (r.total || 0), 0), cor = rows.reduce((s, r) => s + (r.correct || 0), 0);
+  const html = "<h1>Bilan — " + esc(bilanLabel()) + "</h1><div class='sub'>Édité le " + new Date().toLocaleDateString("fr-FR") + " · MyPSE / Vitalform76 · " + rows.length + " apprenant(s)</div>"
+    + "<div><span class='kpi'><b>" + tot + "</b>réponses</span><span class='kpi'><b>" + (tot ? Math.round(cor / tot * 100) + " %" : "–") + "</b>réussite moyenne</span></div>"
+    + "<table><tr><th>Apprenant</th><th>Fonction</th><th>Groupes</th><th>Réponses</th><th>Réussite</th><th>Form. initiale</th><th>FMA</th><th>Dernière activité</th><th>Alertes</th></tr>"
+    + rows.map(r => "<tr><td>" + esc(r.full_name || r.email) + "</td><td>" + esc(niveauShortLabel(r.niveau)) + "</td><td>" + esc(groupsOf(r.id).map(g => g.name).join(", ")) + "</td><td>" + (r.total || 0) + "</td><td>" + pc(r.pct) + "</td><td>" + pc(r.fiPct) + "</td><td>" + pc(r.fmaPct) + "</td><td>" + (r.last_activity ? fmtDateFR(r.last_activity) : "–") + "</td><td>" + esc(r.flags.map(f => f.t).join(" ; ")) + "</td></tr>").join("") + "</table>";
+  openPrintWindow("Bilan — " + bilanLabel(), html);
+}
+function renderBilans() {
+  const container = el(`<div class="staff-wide"></div>`);
+  container.appendChild(el(`<div class="page-header">${iconChip("clipboard", { color: "indigo" })}<div><div class="page-title">Bilans et exports</div><div class="page-sub">Synthèse par groupe ou pour tous vos apprenants, à exporter (Excel / CSV) ou imprimer (PDF).</div></div></div>`));
+  const d = BIL.data;
+  if (d === "loading" || d === null) { container.appendChild(el(`<div class="card"><div class="empty-state">Chargement…</div></div>`)); return container; }
+  if (d.error) {
+    const c = el(`<div class="card"><div class="empty-state">Impossible de charger les bilans pour le moment.</div></div>`);
+    const b = el(`<button class="btn block">Réessayer</button>`); b.onclick = () => goToBilans(BIL.group); c.appendChild(b); container.appendChild(c); return container;
+  }
+  const bar = el(`<div class="card filter-bar"></div>`);
+  const sel = el(`<select><option value="all">Tous les apprenants</option>${activeGroups().map(g => `<option value="${esc(g.id)}" ${BIL.group === g.id ? "selected" : ""}>Groupe : ${esc(g.name)}</option>`).join("")}</select>`);
+  sel.onchange = () => { BIL.group = sel.value; render(); };
+  const dis = el(`<label style="font-size:12.5px;display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" ${BIL.includeDisabled ? "checked" : ""}> Inclure les comptes désactivés</label>`);
+  dis.querySelector("input").onchange = (e) => { BIL.includeDisabled = e.target.checked; render(); };
+  bar.appendChild(sel); bar.appendChild(dis); container.appendChild(bar);
+  const rows = bilanRows();
+  const tot = rows.reduce((s, r) => s + (r.total || 0), 0), cor = rows.reduce((s, r) => s + (r.correct || 0), 0);
+  const fi = rows.filter(r => r.fiPct != null);
+  const toRelaunch = rows.filter(r => r.flags.some(f => f.k === "jamais" || f.k === "inactif")).length;
+  container.appendChild(el(`<div class="kpi-strip" style="margin:12px 0;">
+    <div class="kpi teal"><div class="kv">${rows.length}</div><div class="kl">Apprenants</div></div>
+    <div class="kpi indigo"><div class="kv">${tot}</div><div class="kl">Réponses</div></div>
+    <div class="kpi good"><div class="kv">${tot ? Math.round(cor / tot * 100) + "%" : "—"}</div><div class="kl">Réussite moyenne</div></div>
+    <div class="kpi"><div class="kv">${fi.length ? Math.round(fi.reduce((s, r) => s + r.fiPct, 0) / fi.length) + "%" : "—"}</div><div class="kl">Formation initiale (moy.)</div></div>
+    <div class="kpi ${toRelaunch ? "warn" : "good"}"><div class="kv">${toRelaunch}</div><div class="kl">À relancer</div></div>
+  </div>`));
+  const acts = el(`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;"></div>`);
+  const csv = el(`<button class="btn">Exporter en Excel (CSV)</button>`); csv.onclick = () => exportBilanCsv(rows);
+  const pr = el(`<button class="btn secondary">Imprimer / PDF</button>`); pr.onclick = () => printBilan(rows);
+  acts.appendChild(csv); acts.appendChild(pr); container.appendChild(acts);
+  if (!rows.length) { container.appendChild(el(`<div class="card"><div class="empty-state">Aucun apprenant dans cette sélection.</div></div>`)); }
+  else {
+    const wrap = el(`<div class="stats-table-wrap"><table class="stats-table"><thead><tr><th>Apprenant</th><th>Fonction</th><th>Groupes</th><th>Réponses</th><th>Réussite</th><th>Form. initiale</th><th>FMA</th><th>Dernière activité</th><th>Alertes</th></tr></thead><tbody></tbody></table></div>`);
+    const tbody = wrap.querySelector("tbody");
+    const pc = (v) => v == null ? "–" : v + " %";
+    rows.forEach(r => {
+      const tr = elRow(`<tr class="stats-row"></tr>`);
+      const nt = elCell(`<td><div class="who-cell" style="cursor:pointer;"><div class="name">${esc(r.full_name || r.email)}</div><div class="email">${esc(r.email || "")}</div></div></td>`);
+      nt.querySelector(".who-cell").onclick = () => goToPersonFile(r.id, "bilans");
+      tr.appendChild(nt);
+      [esc(niveauShortLabel(r.niveau)), esc(groupsOf(r.id).map(g => g.name).join(", ")) || "–", r.total || 0, pc(r.pct), pc(r.fiPct), pc(r.fmaPct), r.last_activity ? fmtDateFR(r.last_activity) : "–"].forEach(v => tr.appendChild(elCell(`<td>${v}</td>`)));
+      tr.appendChild(elCell(`<td>${r.flags.length ? r.flags.map(f => `<span class="pill warn">${esc(f.t)}</span>`).join(" ") : "–"}</td>`));
+      tbody.appendChild(tr);
+    });
+    container.appendChild(wrap);
+  }
+  const ids = new Set(rows.map(r => r.id));
+  const rec = renderRecycleAlertsCard((d.alerts || []).filter(a => ids.has(a.account_id)));
+  if (rec) container.appendChild(rec);
+  else container.appendChild(el(`<div class="card" style="margin-top:16px;"><h3 style="margin:0 0 6px;">Recyclages à planifier</h3><div class="help">Aucune échéance de recyclage à signaler pour cette sélection.</div></div>`));
+  return container;
+}
+
 function renderPersonnelManagement() {
   const container = el(`<div class="staff-wide"></div>`);
   container.appendChild(el(`<div class="page-header">${iconChip("users", { color: "critical" })}<div><div class="page-title">Gestion du personnel</div><div class="page-sub">Identité, fonction et qualifications de vos secouristes.</div></div></div>`));
@@ -4517,8 +5085,16 @@ function renderPersonnelManagement() {
     return container;
   }
 
-  const list = state.secouristes;
+  const fullList = state.secouristes;
+  const list = fullList.filter(x => !x.disabled);
   const nb = (n) => list.filter(x => x.niveau === n).length;
+  const pTop = el(`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;"></div>`);
+  const pb1 = el(`<button class="btn">+ Créer un compte apprenant</button>`); pb1.onclick = () => openCreateLearner(PERS_UI.group !== "all" ? PERS_UI.group : "");
+  const pb2 = el(`<button class="btn secondary">Gérer les groupes</button>`); pb2.onclick = goToGroups;
+  pTop.appendChild(pb1); pTop.appendChild(pb2); container.appendChild(pTop);
+  container.appendChild(renderFlash());
+  if (GRP.create) container.appendChild(renderCreateLearnerCard());
+  if (GRP.bulkMsg) container.appendChild(renderBulkMessageCard());
   container.appendChild(el(`<div class="kpi-strip" style="margin-bottom:16px;">
     <div class="kpi teal"><div class="kv">${list.length}</div><div class="kl">Comptes secouristes</div></div>
     <div class="kpi"><div class="kv">${nb("PSC")}</div><div class="kl">Premiers Secours Citoyen</div></div>
@@ -4533,20 +5109,37 @@ function renderPersonnelManagement() {
   const search = el(`<input type="text" class="grow" placeholder="Rechercher un nom ou un e-mail" value="${esc(PERS_UI.q)}">`);
   search.onchange = (e) => { PERS_UI.q = e.target.value; render(); };
   bar.appendChild(sel); bar.appendChild(search);
+  if (activeGroups().length) {
+    const gsel = el(`<select><option value="all">Tous les groupes</option>${activeGroups().map(g => `<option value="${esc(g.id)}" ${PERS_UI.group === g.id ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select>`);
+    gsel.onchange = (e) => { PERS_UI.group = e.target.value; GRP.sel.clear(); render(); };
+    bar.appendChild(gsel);
+  }
+  const nDis = fullList.filter(x => x.disabled).length;
+  if (nDis) {
+    const dl = el(`<label style="font-size:12.5px;display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap;"><input type="checkbox" ${PERS_UI.showDisabled ? "checked" : ""}> Comptes désactivés (${nDis})</label>`);
+    dl.querySelector("input").onchange = (e) => { PERS_UI.showDisabled = e.target.checked; render(); };
+    bar.appendChild(dl);
+  }
   container.appendChild(bar);
 
   const q = PERS_UI.q.trim().toLowerCase();
-  const shown = list.filter(x => (PERS_UI.niveau === "all" || x.niveau === PERS_UI.niveau) && (!q || ((x.full_name || "") + " " + (x.email || "")).toLowerCase().includes(q)));
+  const pg = PERS_UI.group !== "all" ? groupById(PERS_UI.group) : null;
+  const shown = fullList.filter(x => (PERS_UI.showDisabled || !x.disabled) && (PERS_UI.niveau === "all" || x.niveau === PERS_UI.niveau) && (!pg || pg.members.indexOf(x.id) !== -1) && (!q || ((x.full_name || "") + " " + (x.email || "")).toLowerCase().includes(q)));
+  const selIds = shown.filter(x => GRP.sel.has(x.id)).map(x => x.id);
+  if (selIds.length) container.appendChild(renderBulkBar(selIds, PERS_UI.group !== "all" ? { groupId: PERS_UI.group } : null));
 
   const tableWrap = el(`<div class="stats-table-wrap"><table class="stats-table">
     <thead><tr>
-      <th>Secouriste</th><th>Né(e) le</th><th>Adresse</th><th>Fonction</th><th>Difficulté recommandée</th><th>Qualifications</th>
+      <th style="width:34px;"></th><th>Secouriste</th><th>Né(e) le</th><th>Adresse</th><th>Fonction</th><th>Difficulté recommandée</th><th>Qualifications</th>
     </tr></thead>
     <tbody></tbody>
   </table></div>`);
   const tbody = tableWrap.querySelector("tbody");
+  const selAll = el(`<input type="checkbox" ${shown.length && selIds.length === shown.length ? "checked" : ""} title="Tout sélectionner">`);
+  selAll.onchange = () => { shown.forEach(x => selAll.checked ? GRP.sel.add(x.id) : GRP.sel.delete(x.id)); render(); };
+  tableWrap.querySelector("th").appendChild(selAll);
   shown.forEach(sr => appendPersonnelRow(tbody, sr));
-  if (!shown.length) tbody.appendChild(elRow(`<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:18px;">Aucun secouriste ne correspond à ces filtres.</td></tr>`));
+  if (!shown.length) tbody.appendChild(elRow(`<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:18px;">Aucun secouriste ne correspond à ces filtres.</td></tr>`));
   container.appendChild(tableWrap);
   container.appendChild(el(`<div class="section-title">Inviter un formateur</div>`));
   container.appendChild(el(`<div class="card">
@@ -4565,16 +5158,24 @@ function appendPersonnelRow(tbody, sr) {
     ? `<img src="${esc(sr.photo_url)}" style="width:34px;height:34px;border-radius:999px;object-fit:cover;flex:none;" />`
     : `<div style="${avatarStyle}">${esc(initials)}</div>`;
 
-  const row = elRow(`<tr class="stats-row"></tr>`);
-  row.appendChild(elCell(`<td>
+  const row = elRow(`<tr class="stats-row" ${sr.disabled ? 'style="opacity:.6;"' : ""}></tr>`);
+  const cbTd = elCell(`<td></td>`);
+  const cb = el(`<input type="checkbox" ${GRP.sel.has(sr.id) ? "checked" : ""}>`);
+  cb.onchange = () => { cb.checked ? GRP.sel.add(sr.id) : GRP.sel.delete(sr.id); render(); };
+  cbTd.appendChild(cb); row.appendChild(cbTd);
+  const myGroups = groupsOf(sr.id);
+  const nameTd = elCell(`<td>
     <div style="display:flex;align-items:center;gap:10px;">
       ${avatarHtml}
-      <div class="who-cell" style="cursor:default;">
-        <div class="name">${esc(sr.full_name)}</div>
+      <div class="who-cell" style="cursor:pointer;">
+        <div class="name">${esc(sr.full_name)}${sr.disabled ? ' <span class="pill warn">désactivé</span>' : ""}</div>
         <div class="email">${esc(sr.email)}</div>
+        ${myGroups.length ? `<div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap;">${myGroups.map(g => `<span class="pill" style="font-size:10.5px;">${esc(g.name)}</span>`).join("")}</div>` : ""}
       </div>
     </div>
-  </td>`));
+  </td>`);
+  nameTd.querySelector(".who-cell").onclick = () => goToPersonFile(sr.id, "personnel");
+  row.appendChild(nameTd);
   row.appendChild(elCell(`<td style="white-space:nowrap;">${sr.date_naissance ? esc(formatDateFR(sr.date_naissance)) : '<span style="color:var(--text-muted);">—</span>'}</td>`));
   row.appendChild(elCell(`<td style="max-width:200px;">${sr.adresse ? esc(sr.adresse) : '<span style="color:var(--text-muted);">—</span>'}</td>`));
 
@@ -5179,7 +5780,7 @@ function renderSuiviPedago() {
     return container;
   }
   const ui = state.suiviPedagoUI;
-  const all = computeSuiviRows(d);
+  const all = computeSuiviRows(d).filter(r => !r.disabled);
   if (all.length === 0) {
     container.appendChild(el(`<div class="card"><div class="empty-state">Aucun secouriste n'a encore créé de compte.</div></div>`));
     return container;
@@ -7672,6 +8273,23 @@ function renderAdmin() {
 /* ============================================================
    QUESTIONNAIRES — rendu (thèmes + questions, formateur + administrateur)
    ============================================================ */
+const Q_STATUS = { validee: "Validée", a_relire: "À relire", brouillon: "Brouillon" };
+async function setQuestionsStatus(ids, status) {
+  if (!ids.length) return;
+  if (ids.length > 1 && !confirm("Passer " + ids.length + " question(s) en « " + Q_STATUS[status] + " » ?" + (status !== "validee" ? " Elles ne seront plus visibles par les apprenants." : ""))) { render(); return; }
+  const r = await rpc("app_set_question_status", { p_token: state.auth.token, p_ids: ids, p_status: status });
+  if (!r || !r.ok) { alert("Changement de statut impossible pour le moment."); render(); return; }
+  await goToQuestionsAdmin();
+}
+function thinThemes() {
+  return THEMES.filter(t => !/^formations/.test(t.id)).map(t => {
+    const qs = QUESTIONS.filter(q => q.theme === t.id && (q.status || "validee") === "validee");
+    const why = [];
+    if (qs.length < 5) why.push(qs.length + " question" + (qs.length > 1 ? "s" : "") + " validée" + (qs.length > 1 ? "s" : ""));
+    if (qs.length && !qs.some(q => q.difficulty === "facile")) why.push("aucune « facile »");
+    return { t, why };
+  }).filter(x => x.why.length);
+}
 function renderQuestionsAdmin() {
   const container = el(`<div class="staff-wide"></div>`);
   container.appendChild(el(`<div class="page-header">${iconChip("help", {color: "indigo"})}<div><div class="page-title">Questionnaires</div><div class="page-sub">Créez, modifiez et organisez les thèmes et les questions de la bibliothèque de révision.</div></div></div>`));
@@ -7700,9 +8318,21 @@ function renderQuestionsAdmin() {
     <div class="kpi teal"><div class="kv">${QUESTIONS.length}</div><div class="kl">Questions</div></div>
     <div class="kpi ${emptyThemes.length ? "warn" : "good"}"><div class="kv">${emptyThemes.length}</div><div class="kl">Thème${emptyThemes.length > 1 ? "s" : ""} sans question</div></div>
     <div class="kpi"><div class="kv">${["PSC", "PSE1", "PSE2"].map(l => THEMES.filter(t => t.level === l).reduce((n, t) => n + countOf(t.id), 0)).join(" · ")}</div><div class="kl">Questions PSC · PSE1 · PSE2</div></div>
+    <div class="kpi ${QUESTIONS.some(q => (q.status || "validee") !== "validee") ? "warn" : "good"}"><div class="kv">${QUESTIONS.filter(q => (q.status || "validee") === "a_relire").length} · ${QUESTIONS.filter(q => q.status === "brouillon").length}</div><div class="kl">À relire · Brouillons</div></div>
   </div>`));
 
   container.appendChild(renderProposalsCard());
+  const thin = thinThemes();
+  if (thin.length) {
+    const tc = el(`<div class="card" style="margin-bottom:16px;"><h3 style="margin:0 0 6px;">Thèmes à étoffer (${thin.length})</h3><div class="help" style="margin-bottom:8px;">Moins de 5 questions validées ou aucune question « facile ». Cliquez pour ouvrir le thème.</div></div>`);
+    const rowT = el(`<div class="choice-row"></div>`);
+    thin.forEach(x => {
+      const ch = el(`<div class="chip">${esc(x.t.label)} · ${esc(niveauShortLabel(x.t.level))} — ${esc(x.why.join(", "))}</div>`);
+      ch.onclick = () => { qa.limit = 40; qa.level = "all"; qa.selectedTheme = x.t.id; render(); };
+      rowT.appendChild(ch);
+    });
+    tc.appendChild(rowT); container.appendChild(tc);
+  }
   const themesCard = el(`<div class="card" style="margin-bottom:16px;"></div>`);
   const themesHeader = el(`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px;"></div>`);
   themesHeader.appendChild(el(`<h3 style="margin:0;">Thèmes</h3>`));
@@ -7768,15 +8398,28 @@ function renderQuestionsAdmin() {
   searchWrap.appendChild(makeSearchInput("qaSearch", qa.q, "Rechercher dans les questions…", v => { qa.q = v; }));
   questionsCard.appendChild(searchWrap);
 
+  const stRow = el(`<div class="choice-row" style="margin:6px 0;"></div>`);
+  [["all", "Tous les statuts"], ["validee", "Validées"], ["a_relire", "À relire"], ["brouillon", "Brouillons"]].forEach(([id, label]) => {
+    const c = el(`<div class="chip ${(qa.status || "all") === id ? "selected" : ""}">${label}</div>`);
+    c.onclick = () => { qa.limit = 40; qa.status = id; render(); };
+    stRow.appendChild(c);
+  });
+  questionsCard.appendChild(stRow);
   const qNeedle = (qa.q || "").trim().toLowerCase();
   const visibleQuestions = QUESTIONS.filter(q => {
     if (qa.selectedTheme) { if (q.theme !== qa.selectedTheme) return false; }
     else if (qa.level !== "all" && themeLevel(q.theme) !== qa.level) return false;
     if (qNeedle && !String((q.type === "order" ? q.scenario : q.q) || "").toLowerCase().includes(qNeedle)) return false;
+    if (qa.status && qa.status !== "all" && (q.status || "validee") !== qa.status) return false;
     return true;
   });
   questionsCard.appendChild(el(`<p class="help" style="margin:2px 0 0;">${visibleQuestions.length} question${visibleQuestions.length > 1 ? "s" : ""} affichée${visibleQuestions.length > 1 ? "s" : ""}.</p>`));
 
+  if (visibleQuestions.length > 1) {
+    const bulk = el(`<select class="mini" style="margin:6px 0;"><option value="">Changer le statut des ${visibleQuestions.length} questions affichées…</option>${Object.keys(Q_STATUS).map(k => `<option value="${k}">Passer en « ${Q_STATUS[k]} »</option>`).join("")}</select>`);
+    bulk.onchange = () => { if (bulk.value) setQuestionsStatus(visibleQuestions.map(q => q.id), bulk.value); };
+    questionsCard.appendChild(bulk);
+  }
   if (!visibleQuestions.length) {
     questionsCard.appendChild(el(`<div class="empty-state" style="margin-top:10px;">Aucune question${qNeedle ? " ne correspond à la recherche" : (state.questionsAdmin.selectedTheme ? " dans ce thème" : "")} pour le moment.</div>`));
   } else {
@@ -7787,7 +8430,7 @@ function renderQuestionsAdmin() {
       const row = el(`<div class="card qa-q">
         <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start;">
           <div style="flex:1;min-width:200px;">
-            <div class="qa-meta"><span>${esc(themeLabel(q.theme))}</span><span class="pill">${esc(TYPE_LABELS[q.type] || q.type)}</span><span class="pill diff-${esc(q.difficulty)}">${esc(q.difficulty)}</span>${q.media && q.media.length ? '<span class="pill">📷 ' + q.media.length + "</span>" : ""}</div>
+            <div class="qa-meta"><span>${esc(themeLabel(q.theme))}</span><span class="pill">${esc(TYPE_LABELS[q.type] || q.type)}</span><span class="pill diff-${esc(q.difficulty)}">${esc(q.difficulty)}</span>${(q.status || "validee") !== "validee" ? `<span class="pill warn">${esc(Q_STATUS[q.status] || q.status)}</span>` : ""}${q.media && q.media.length ? '<span class="pill">📷 ' + q.media.length + "</span>" : ""}</div>
             <div style="font-weight:600;font-size:14px;">${esc(summary)}</div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;" id="qActions-${q.id}"></div>
@@ -7797,6 +8440,9 @@ function renderQuestionsAdmin() {
       const editBtn = el(`<button class="btn secondary">Modifier</button>`);
       editBtn.onclick = () => openQuestionForm(q.theme, q);
       actions.appendChild(editBtn);
+      const stq = el(`<select class="mini" title="Statut">${Object.keys(Q_STATUS).map(k => `<option value="${k}" ${(q.status || "validee") === k ? "selected" : ""}>${Q_STATUS[k]}</option>`).join("")}</select>`);
+      stq.onchange = () => setQuestionsStatus([q.id], stq.value);
+      actions.appendChild(stq);
       const delBtn = el(`<button class="btn secondary" style="color:var(--critical);">Supprimer</button>`);
       delBtn.onclick = () => deleteQuestion(q);
       actions.appendChild(delBtn);
@@ -7960,6 +8606,11 @@ function renderQuestionForm() {
 
   wrap.appendChild(renderQuestionFormMedia(f, inputStyle));
 
+  wrap.appendChild(el(`<label style="display:block;font-size:12.5px;font-weight:700;margin-bottom:6px;">Statut de la question</label>`));
+  const stSel = el(`<select style="${inputStyle}">${Object.keys(Q_STATUS).map(k => `<option value="${k}" ${f.status === k ? "selected" : ""}>${Q_STATUS[k]}</option>`).join("")}</select>`);
+  stSel.onchange = () => { f.status = stSel.value; };
+  wrap.appendChild(stSel);
+  wrap.appendChild(el(`<div class="help" style="margin:-6px 0 12px;">Seules les questions « Validées » sont proposées aux apprenants.</div>`));
   wrap.appendChild(el(`<label style="display:block;font-size:12.5px;font-weight:700;margin-bottom:6px;">Explication (affichée après la réponse)</label>`));
   const explInput = el(`<textarea placeholder="Explication pédagogique" rows="2" style="${inputStyle}resize:vertical;">${esc(f.explanation)}</textarea>`);
   explInput.oninput = (e) => { f.explanation = e.target.value; };
@@ -8138,6 +8789,9 @@ function renderSessionCardBody(s) {
     const editBtn = el(`<button class="btn secondary">Modifier</button>`);
     editBtn.onclick = () => openEditSessionForm(s);
     actions.appendChild(editBtn);
+    const dupBtn = el(`<button class="btn secondary">Dupliquer</button>`);
+    dupBtn.onclick = () => openDuplicateSessionForm(s);
+    actions.appendChild(dupBtn);
     const delBtn = el(`<button class="btn secondary" style="color:var(--critical);">Supprimer</button>`);
     delBtn.onclick = () => deleteSession(s);
     actions.appendChild(delBtn);
