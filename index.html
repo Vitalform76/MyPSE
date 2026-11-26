@@ -539,6 +539,12 @@
   .home-hero .hello { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 4px; }
   .home-hero .date { font-size: 13px; color: var(--text-muted); text-transform: capitalize; }
   .section-title { font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); margin: 22px 0 10px; }
+  .preview-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 18px; background: #FFF4D6; border-bottom: 1px solid #E8C766; color: #5B4300; font-size: 13px; position: sticky; top: 0; z-index: 20; }
+  .preview-banner .pb-text { flex: 1 1 260px; }
+  .preview-banner .pb-levels { display: flex; gap: 6px; flex-wrap: wrap; }
+  .preview-banner .pb-chip { font-family: inherit; font-size: 12px; font-weight: 700; padding: 5px 11px; border-radius: 999px; border: 1px solid #E8C766; background: #fff; color: #5B4300; cursor: pointer; }
+  .preview-banner .pb-chip.on { background: #5B4300; color: #fff; border-color: #5B4300; }
+  .preview-banner .pb-exit { font-size: 12px; padding: 6px 12px; }
   .todo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
   .todo-tile { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: 14px; background: var(--card); border: 1px solid var(--border); box-shadow: var(--shadow-sm); cursor: pointer; transition: transform .12s ease, box-shadow .12s ease; text-align: left; font-family: inherit; color: var(--text-primary); }
   .todo-tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
@@ -1390,7 +1396,12 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const SESSION_STORAGE_KEY = "pse_revision_token";
 const CONTENT_CACHE_KEY = "pse_revision_content_cache_v1";
 
+// Aperçu apprenant : seules les lectures (et la déconnexion) partent vers le serveur.
+const PREVIEW_READ_ONLY_RE = /^app_(list_|get_|my_(?!notifications_read)|learner_my_|me$|msg_(get|list|contacts)|selfstudy_overview|fs_list_|logout$)/;
 async function rpc(fnName, params) {
+  if (state.previewLearner && !PREVIEW_READ_ONLY_RE.test(fnName)) {
+    return { error: "preview", message: "Aperçu apprenant : lecture seule, rien n'est enregistré." };
+  }
   let res;
   try {
     res = await fetch(SUPABASE_URL + "/rest/v1/rpc/" + fnName, {
@@ -1578,15 +1589,15 @@ function isLevelUnlocked(level) {
   const acc = state.auth.account;
   if (!acc) return false;
   if (isStaff()) return true;
-  return niveauRank(level) <= niveauRank(acc.niveau);
+  return niveauRank(level) <= niveauRank(effectiveNiveau(acc));
 }
 function visibleFonctions() {
   const acc = state.auth.account;
   if (!acc) return [];
   if (isStaff()) return ["PSE1", "PSE2", "CHEF_EQUIPE", "CONDUITE", "PSC"];
-  const list = ["PSC", "PSE1", "PSE2"].filter(f => niveauRank(f) <= niveauRank(acc.niveau));
-  if (acc.is_chef_equipe) list.push("CHEF_EQUIPE");
-  if (acc.has_conduite_module) list.push("CONDUITE");
+  const list = ["PSC", "PSE1", "PSE2"].filter(f => niveauRank(f) <= niveauRank(effectiveNiveau(acc)));
+  if (!state.previewLearner && acc.is_chef_equipe) list.push("CHEF_EQUIPE");
+  if (!state.previewLearner && acc.has_conduite_module) list.push("CONDUITE");
   return list;
 }
 function esc(s) {
@@ -1607,9 +1618,25 @@ const WIZARD_STEPS = [
 // documents/calendrier/suivi des secouristes. Conservé sous ce nom historique pour ne pas casser les ~15
 // usages existants ; utiliser isAdministrateur() pour les actions réservées au rôle le plus élevé
 // (réglages globaux du site, code formateur, gestion des rôles/comptes).
-function isFormateur() { return state.auth.account && (state.auth.account.role === "formateur" || state.auth.account.role === "administrateur"); }
+// Aperçu apprenant (26/11/2026) : un formateur/administrateur peut voir l'application comme un apprenant
+// (niveau PSC/PSE1/PSE2 au choix), en LECTURE SEULE (voir PREVIEW_READ_ONLY_RE dans rpc()). Tant que
+// state.previewLearner est défini, isFormateur()/isAdministrateur() renvoient false : toute l'interface
+// se comporte comme celle d'un apprenant. Les droits côté serveur ne changent pas.
+function isRealStaff() { return !!(state.auth.account && (state.auth.account.role === "formateur" || state.auth.account.role === "administrateur")); }
+function isFormateur() { return isRealStaff() && !state.previewLearner; }
 function isStaff() { return isFormateur(); }
-function isAdministrateur() { return state.auth.account && state.auth.account.role === "administrateur"; }
+function isAdministrateur() { return !!(state.auth.account && state.auth.account.role === "administrateur") && !state.previewLearner; }
+function effectiveNiveau(acc) { return state.previewLearner ? state.previewLearner.niveau : acc.niveau; }
+function goToLearnerPreview(niveau) {
+  state.previewLearner = { niveau: niveau || "PSE1" };
+  state.mobileSidebarOpen = false;
+  goToHome();
+}
+function exitLearnerPreview() {
+  state.previewLearner = null;
+  state.mobileSidebarOpen = false;
+  goToHome();
+}
 function roleLabel(role) { return role === "administrateur" ? "Administrateur" : (role === "formateur" ? "Formateur" : "Secouriste"); }
 
 // Ajouté le 20/08/2026 (soir) : fusion de la fonction (PSC/PSE1/PSE2) et du rôle "côté écrans" —
@@ -1885,10 +1912,12 @@ async function goToHome() {
     state.secouristes = "loading";
     render();
     state.sessions = "loading";
-    const [r, sr] = await Promise.all([
+    const [r, sr, al] = await Promise.all([
       rpc("app_list_secouristes", { p_token: state.auth.token }),
-      rpc("app_list_sessions", { p_token: state.auth.token })
+      rpc("app_list_sessions", { p_token: state.auth.token }),
+      rpc("app_formateur_parcours_alerts", { p_token: state.auth.token })
     ]);
+    state.homeAlerts = al && Array.isArray(al.steps) ? al.steps : [];
     state.secouristes = r && r.secouristes ? r.secouristes : { error: true };
     state.sessions = sr && sr.sessions ? sr.sessions : { error: true };
     if (r && r.formateur_code) state.formateurCode = r.formateur_code;
@@ -2886,6 +2915,7 @@ function render() {
     return;
   }
   if (state.view === "auth") {
+    state.previewLearner = null;
     root.appendChild(renderAuthScreen());
     return;
   }
@@ -2899,6 +2929,7 @@ function render() {
   }
   const content = el(`<div class="content"></div>`);
   content.appendChild(renderTopbar());
+  if (state.previewLearner) content.appendChild(renderPreviewBanner());
   const appDiv = el(`<div class="app"></div>`);
   if (state.view !== _lastRenderedView && state.view !== "quiz") appDiv.classList.add("page-enter");
   _lastRenderedView = state.view;
@@ -2949,6 +2980,18 @@ function render() {
   if (state.view === "quiz" && state.quiz.mode === "examen") updateTimerDisplay();
 }
 
+function renderPreviewBanner() {
+  const bar = el(`<div class="preview-banner"><span class="pb-text"><b>Aperçu apprenant</b> · lecture seule : rien n'est enregistré (réponses, progression, messages).</span><span class="pb-levels"></span><button type="button" class="btn secondary pb-exit">Quitter l'aperçu</button></div>`);
+  const lv = bar.querySelector(".pb-levels");
+  ["PSC", "PSE1", "PSE2"].forEach(id => {
+    const b = el(`<button type="button" class="pb-chip ${state.previewLearner.niveau === id ? "on" : ""}">${esc(niveauShortLabel(id))}</button>`);
+    b.onclick = () => { state.previewLearner.niveau = id; goToHome(); };
+    lv.appendChild(b);
+  });
+  bar.querySelector(".pb-exit").onclick = exitLearnerPreview;
+  return bar;
+}
+
 function renderTopbar() {
   const bar = el(`<div class="topbar"><div class="brand-mini"><img class="brand-logo-img" src="${BRAND_LOGO_DARK}" alt="MyPSE" /></div><div style="display:flex;align-items:center;"><button class="burger notif-top" aria-label="Notifications">${svgIcon("bell", 16)}<span class="notif-badge">0</span></button><button class="burger menu-burger" aria-label="Menu">☰</button></div></div>`);
   bar.querySelector(".menu-burger").onclick = () => { state.mobileSidebarOpen = !state.mobileSidebarOpen; render(); };
@@ -2956,6 +2999,52 @@ function renderTopbar() {
   const nb = bar.querySelector(".notif-badge"); const n = (state.notifs && state.notifs.unread) || 0;
   nb.textContent = n > 9 ? "9+" : String(n); nb.style.display = n > 0 ? "inline-flex" : "none";
   return bar;
+}
+
+// Navigation formateur / administrateur (26/11/2026) : organisée par métiers, sans la partie « apprenant »
+// (Mes formations, révisions) — accessible via le bouton « Aperçu apprenant » en bas du menu.
+function buildStaffNav(aside, navMain) {
+  const add = (nav, views, icon, label, fn, badge) => {
+    const active = views.includes(state.view);
+    const b = el(`<button class="${active ? "active" : ""}"><span class="ic">${svgIcon(icon, 15)}</span>${esc(label)}${badge != null ? '<span class="msg-badge">0</span>' : ""}</button>`);
+    if (badge != null) { const bb = b.querySelector(".msg-badge"); bb.textContent = badge > 9 ? "9+" : String(badge); bb.style.display = badge > 0 ? "inline-flex" : "none"; }
+    b.onclick = () => { fn(); closeMobileSidebar(); };
+    nav.appendChild(b);
+  };
+  const g = id => aside.querySelector("#" + id);
+
+  // Apprenants
+  add(g("navApp"), ["personnelManagement", "personFile"], "users", "Liste et fiches", goToPersonnelManagement);
+  add(g("navApp"), ["trainingOverview"], "cap", "Formation initiale", goToTrainingOverview);
+  add(g("navApp"), ["fmaOverview"], "calendar", "Recyclage (FMA)", goToFmaOverview);
+  add(g("navApp"), ["selfStudyTrack"], "book", "Suivi auto-formation", goToSelfStudyTrack);
+  // Entraînements
+  add(g("navTrn"), ["sessions"], "calendar", "Calendrier et planning", goToSessions);
+  add(g("navTrn"), ["trainingStats"], "chart", "Présences et assiduité", goToTrainingStats);
+  // Contenus (badge = propositions de questions en attente de validation)
+  const pend = pendingProposalsCount();
+  add(g("navCont"), ["questionsAdmin"], "help", "Banque de questions", goToQuestionsAdmin, pend);
+  add(g("navCont"), ["documents"], "folder", "Documents", goToDocuments);
+  // Rapports
+  add(g("navRap"), ["suiviPedago"], "users", "Suivi pédagogique", goToSuiviPedago);
+  add(g("navRap"), ["formateur"], "chart", "Statistiques", goToFormateur);
+  // Échanges
+  add(g("navEch"), ["messages"], "mail", "Messagerie", () => goToMessages(), MSG.unread || 0);
+  add(g("navEch"), ["tickets"], "help", "Support", goToTickets);
+  // Outils avancés (module gelé le 24/11/2026 : conservé, sans nouveau développement)
+  add(g("navAdv"), ["formationSessions"], "clipboard", "Sessions de formation", goToFormationSessions);
+  // Administration (administrateur uniquement)
+  if (isAdministrateur()) {
+    add(g("navAdmin"), ["admin"], "gear", "Administration", goToAdmin);
+    add(g("navAdmin"), ["createProfile"], "users", "Créer un profil", goToCreateProfile);
+  }
+}
+
+// Nombre de propositions de questions en attente (charge la liste une seule fois, en tâche de fond).
+function pendingProposalsCount() {
+  if (EXTRAS.proposals === null || EXTRAS.proposals === undefined) { try { loadProposals().then(() => { if (state.view !== "quiz") render(); }); } catch (e) {} return 0; }
+  if (EXTRAS.proposals === "loading" || !EXTRAS.proposals.items) return 0;
+  return EXTRAS.proposals.items.filter(x => x.status === "en_attente").length;
 }
 
 function renderSidebar() {
@@ -2968,14 +3057,22 @@ function renderSidebar() {
       </div>
     </div>
     <nav class="side-nav" id="navMain"></nav>
+    ${isFormateur() ? `
+    <div class="nav-group-label">Apprenants</div><nav class="side-nav" id="navApp"></nav>
+    <div class="nav-group-label">Entraînements</div><nav class="side-nav" id="navTrn"></nav>
+    <div class="nav-group-label">Contenus</div><nav class="side-nav" id="navCont"></nav>
+    <div class="nav-group-label">Rapports</div><nav class="side-nav" id="navRap"></nav>
+    <div class="nav-group-label">Échanges</div><nav class="side-nav" id="navEch"></nav>
+    <div class="nav-group-label">Outils avancés</div><nav class="side-nav" id="navAdv"></nav>
+    ${isAdministrateur() ? '<div class="nav-group-label">Administration</div><nav class="side-nav" id="navAdmin"></nav>' : ""}
+    ` : `
     <div class="nav-group-label">Mes formations</div>
     <nav class="side-nav" id="navTrack"></nav>
     <div class="nav-group-label">Questionnaires</div>
     <nav class="side-nav" id="navQuiz"></nav>
     <div class="nav-group-label">Ressources</div>
     <nav class="side-nav" id="navRes"></nav>
-    ${isFormateur() ? '<div class="nav-group-label">Pédagogie</div><nav class="side-nav" id="navPedago"></nav>' : ""}
-    ${isAdministrateur() ? '<div class="nav-group-label">Administration</div><nav class="side-nav" id="navAdmin"></nav>' : ""}
+    `}
     <div class="spacer"></div>
     <div class="ref-badge">${esc(state.appSettings.referentiel_banner)}</div>
     <div class="account-box" id="accountBox"></div>
@@ -2992,11 +3089,14 @@ function renderSidebar() {
   const msgBtn = el(`<button class="${state.view === "messages" ? "active" : ""}"><span class="ic">${svgIcon("mail", 15)}</span>Messagerie<span class="msg-badge">0</span></button>`);
   msgBtn.onclick = () => goToMessages();
   { const mb = msgBtn.querySelector(".msg-badge"); const n = MSG.unread || 0; mb.textContent = n > 9 ? "9+" : String(n); mb.style.display = n > 0 ? "inline-flex" : "none"; }
-  navMain.appendChild(msgBtn);
+  if (!isFormateur()) navMain.appendChild(msgBtn); // formateur : Messagerie et Support sont dans « Échanges »
   const supBtn = el(`<button class="${state.view === "tickets" ? "active" : ""}"><span class="ic">${svgIcon("help", 15)}</span>Support</button>`);
   supBtn.onclick = () => goToTickets();
-  navMain.appendChild(supBtn);
+  if (!isFormateur()) navMain.appendChild(supBtn);
 
+  if (isFormateur()) {
+    buildStaffNav(aside, navMain);
+  } else {
   // "Formation initiale" détachée du groupe "Mes formations" le 29/08/2026, à la demande du porteur de
   // projet : c'est un carnet de suivi de scolarité (validation point par point par le formateur), pas
   // une révision par thème/fonction — placée ici en onglet à part entière juste sous "Accueil".
@@ -3082,46 +3182,14 @@ function renderSidebar() {
   calBtn.onclick = () => { goToSessions(); closeMobileSidebar(); };
   navRes.appendChild(calBtn);
 
+  }
+
   if (isFormateur()) {
-    const navPedago = aside.querySelector("#navPedago");
-    // (18) Renommé "Personnels" -> "Mes statistiques" et déplacé de "Ressources" vers "Pédagogie" le
-    // 29/08/2026 — même page, même comportement (goToFormateur/renderFormateur inchangés), seuls le
-    // libellé du bouton et son emplacement dans le menu changent.
-    const statsBtn = el(`<button class="${state.view === "formateur" ? "active" : ""}"><span class="ic">${svgIcon("chart", 15)}</span>Mes statistiques</button>`);
-    statsBtn.onclick = () => { goToFormateur(); closeMobileSidebar(); };
-    const suiviBtn = el(`<button class="${state.view === "suiviPedago" ? "active" : ""}"><span class="ic">${svgIcon("users", 15)}</span>Suivi pédagogique</button>`);
-    suiviBtn.onclick = () => { goToSuiviPedago(); closeMobileSidebar(); };
-    navPedago.appendChild(suiviBtn);
-    // Module entraînements (11/10/2026) : présences, heures et assiduité des secouristes.
-    const tstatsBtn = el(`<button class="${state.view === "trainingStats" ? "active" : ""}"><span class="ic">${svgIcon("calendar", 15)}</span>Suivi des entraînements</button>`);
-    tstatsBtn.onclick = () => { goToTrainingStats(); closeMobileSidebar(); };
-    navPedago.appendChild(tstatsBtn);
-    navPedago.appendChild(statsBtn);
-    // "Gestion du personnel" (point 17) ouverte au formateur le 29/08/2026 (suite) : les réglages de
-    // compte (fonction/difficulté/qualifications) y ont été déplacés depuis "Mes statistiques", qui
-    // devient une page de lecture seule — il fallait donc que le formateur garde l'accès à ces réglages,
-    // qu'il pouvait déjà modifier avant cette réorganisation.
-    const personnelBtn = el(`<button class="${state.view === "personnelManagement" ? "active" : ""}"><span class="ic">${svgIcon("users", 15)}</span>Gestion du personnel</button>`);
-    personnelBtn.onclick = () => { goToPersonnelManagement(); closeMobileSidebar(); };
-    navPedago.appendChild(personnelBtn);
-    const questionsBtn = el(`<button class="${state.view === "questionsAdmin" ? "active" : ""}"><span class="ic">${svgIcon("help", 15)}</span>Questionnaires</button>`);
-    questionsBtn.onclick = () => { goToQuestionsAdmin(); closeMobileSidebar(); };
-    navPedago.appendChild(questionsBtn);
-    const fsBtn = el(`<button class="${state.view === "formationSessions" ? "active" : ""}"><span class="ic">${svgIcon("clipboard", 15)}</span>Sessions de formation</button>`);
-    fsBtn.onclick = () => { goToFormationSessions(); closeMobileSidebar(); };
-    navPedago.appendChild(fsBtn);
+    const prev = el(`<button type="button" class="btn secondary block" style="margin:8px 14px 10px;width:calc(100% - 28px);font-size:12.5px;">👁 Aperçu apprenant</button>`);
+    prev.title = "Voir l'application comme un apprenant (lecture seule)";
+    prev.onclick = () => goToLearnerPreview("PSE1");
+    aside.querySelector(".spacer").after(prev);
   }
-
-  if (isAdministrateur()) {
-    const navAdmin = aside.querySelector("#navAdmin");
-    const adminBtn = el(`<button class="${state.view === "admin" ? "active" : ""}"><span class="ic">${svgIcon("gear", 15)}</span>Administration</button>`);
-    adminBtn.onclick = () => { goToAdmin(); closeMobileSidebar(); };
-    navAdmin.appendChild(adminBtn);
-    const createProfileBtn = el(`<button class="${state.view === "createProfile" ? "active" : ""}"><span class="ic">${svgIcon("users", 15)}</span>Créer un profil</button>`);
-    createProfileBtn.onclick = () => { goToCreateProfile(); closeMobileSidebar(); };
-    navAdmin.appendChild(createProfileBtn);
-  }
-
   const accountBox = aside.querySelector("#accountBox");
   const fullName = state.auth.account.full_name || "";
   const initials = fullName.split(" ").filter(Boolean).map(w => w[0]).slice(0, 2).join("").toUpperCase();
@@ -4084,6 +4152,33 @@ function renderFormateurHomeContent() {
   }).filter(x => x.flags.length);
   const toRelaunch = flagged.filter(x => !x.total || x.flags.some(f => f.indexOf("Inactif") === 0)).length;
 
+  // --- À faire aujourd'hui (26/11/2026) : actions prioritaires, chacune ouvre directement la bonne page.
+  {
+    const todo = el(`<div class="todo-grid" style="margin-bottom:18px;"></div>`);
+    const addTile = (cls, icon, title, sub, fn) => {
+      const t = el(`<button type="button" class="todo-tile ${cls}"><span class="ti">${svgIcon(icon, 18)}</span><span><div class="tt">${esc(title)}</div><div class="ts">${esc(sub)}</div></span></button>`);
+      t.onclick = fn; todo.appendChild(t);
+    };
+    const plural = (n, a, b) => n + " " + (n > 1 ? b : a);
+    const pend = pendingProposalsCount();
+    if (pend > 0) addTile("primary", "help", plural(pend, "question à valider", "questions à valider"), "Propositions en attente dans la banque de questions", goToQuestionsAdmin);
+    if (toRelaunch > 0) addTile("", "users", plural(toRelaunch, "apprenant à relancer", "apprenants à relancer"), "Jamais entraînés ou inactifs depuis 30 jours", goToSuiviPedago);
+    const nAl = Array.isArray(state.homeAlerts) ? state.homeAlerts.length : 0;
+    if (nAl > 0) addTile("", "clock", plural(nAl, "alerte de parcours", "alertes de parcours"), "Recyclages et points de parcours à traiter", goToSuiviPedago);
+    const unreadMsg = MSG.unread || 0;
+    if (unreadMsg > 0) addTile("", "mail", plural(unreadMsg, "message non lu", "messages non lus"), "Ouvrir la messagerie", () => goToMessages());
+    const unreadNot = (state.notifs && state.notifs.unread) || 0;
+    if (unreadNot > 0) addTile("", "bell", plural(unreadNot, "notification", "notifications"), "Voir ce qui est nouveau", () => toggleNotifPanel());
+    if (Array.isArray(state.sessions)) {
+      const nextS = state.sessions.filter(x => x.status !== "annulee" && new Date(x.starts_at).getTime() >= Date.now() - 3600000)
+        .sort((x, y) => new Date(x.starts_at) - new Date(y.starts_at))[0];
+      if (nextS) addTile("", "calendar", "Prochain entraînement", nextS.title + " · " + formatSessionDate(nextS.starts_at), goToSessions);
+    }
+    container.appendChild(el(`<div class="section-title">À faire aujourd'hui</div>`));
+    if (todo.children.length) container.appendChild(todo);
+    else container.appendChild(el(`<div class="card" style="margin-bottom:18px;"><div class="empty-state">Rien d'urgent : tout est à jour.</div></div>`));
+  }
+
   container.appendChild(el(`<div class="kpi-strip">
     <div class="kpi teal"><div class="kv">${list.length}</div><div class="kl">Comptes secouristes</div></div>
     <div class="kpi indigo"><div class="kv">${activeCount}</div><div class="kl">Ayant déjà pratiqué</div></div>
@@ -4092,7 +4187,7 @@ function renderFormateurHomeContent() {
   </div>`));
 
   // Deux colonnes : à surveiller | prochains entraînements
-  container.appendChild(el(`<div class="section-title">Aujourd'hui</div>`));
+  container.appendChild(el(`<div class="section-title">Vue d'ensemble</div>`));
   const cols = el(`<div class="home-cols staff"></div>`);
   const left = el(`<div class="col"></div>`), right = el(`<div class="col"></div>`);
   const watch = el(`<div class="card accent-coral"><div class="mod-head"><h3>À surveiller</h3></div></div>`);
@@ -4115,37 +4210,6 @@ function renderFormateurHomeContent() {
   cols.appendChild(left); cols.appendChild(right);
   container.appendChild(cols);
 
-  // Outils regroupés
-  const groups = [
-    { title: "Suivi des apprenants", items: [
-      { icon: "users", color: "teal", title: "Suivi pédagogique", sub: "Tableau de bord des secouristes", fn: goToSuiviPedago },
-      { icon: "chart", color: "indigo", title: "Mes statistiques", sub: "Suivi individuel et difficulté recommandée", fn: goToFormateur },
-      { icon: "cap", color: "coral", title: "Formation initiale", sub: "Vue d'ensemble module par module", fn: goToTrainingOverview },
-      { icon: "calendar", color: "teal", title: "Recyclage (FMA)", sub: "Suivi de la formation continue", fn: goToFmaOverview },
-      { icon: "chart", color: "teal", title: "Suivi des entraînements", sub: "Présences, heures et assiduité", fn: goToTrainingStats }
-    ] },
-    { title: "Organisation", items: [
-      { icon: "calendar", color: "indigo", title: "Calendrier", sub: "Séances et entraînements programmés", fn: goToSessions },
-      { icon: "clipboard", color: "amber", title: "Sessions de formation", sub: "Documents administratifs et stagiaires", fn: goToFormationSessions },
-      { icon: "users", color: "teal", title: "Gestion du personnel", sub: "Fonctions, qualifications, difficulté", fn: goToPersonnelManagement },
-      { icon: "mail", color: "indigo", title: "Messagerie", sub: "Échanger avec vos secouristes", fn: () => goToMessages() }
-    ] },
-    { title: "Contenus", items: [
-      { icon: "clipboard", color: "amber", title: "Questionnaires", sub: "Statistiques et contenus de révision", fn: goToProgress },
-      { icon: "folder", color: "good", title: "Documents", sub: "Mémos, fiches et vidéos", fn: goToDocuments }
-    ] }
-  ];
-  if (isAdministrateur()) groups[1].items.push({ icon: "users", color: "critical", title: "Administration", sub: "Comptes, rôles et réglages", fn: goToAdmin });
-  groups.forEach(g => {
-    container.appendChild(el(`<div class="section-title">${esc(g.title)}</div>`));
-    const grid = el(`<div class="tool-grid"></div>`);
-    g.items.forEach(s => {
-      const card = el(`<button type="button" class="tool-card">${iconChip(s.icon, { color: s.color })}<span><div class="tt">${esc(s.title)}</div><div class="ts">${esc(s.sub)}</div></span></button>`);
-      card.onclick = s.fn;
-      grid.appendChild(card);
-    });
-    container.appendChild(grid);
-  });
   return container;
 }
 
